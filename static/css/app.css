@@ -414,7 +414,8 @@ img {
 
 .primary-button,
 .ghost-button,
-.danger-button {
+.danger-button,
+.manual-add-submit-button {
   border: 0;
   border-radius: 14px;
   padding: 12px 16px;
@@ -438,6 +439,22 @@ img {
   background: linear-gradient(135deg, #c7432f, #e06248);
   color: white;
   box-shadow: 0 10px 18px rgba(199, 67, 47, 0.18);
+}
+
+.manual-add-submit-button {
+  background: linear-gradient(135deg, #ffcd1f, #f2a900);
+  color: #173019;
+  font-weight: 700;
+  box-shadow: 0 10px 18px rgba(242, 169, 0, 0.22);
+}
+
+.manual-add-submit-button:hover {
+  transform: translateY(-1px);
+}
+
+.manual-add-submit-button:focus {
+  outline: 2px solid rgba(242, 169, 0, 0.28);
+  outline-offset: 2px;
 }
 
 .text-link {

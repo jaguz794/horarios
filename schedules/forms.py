@@ -157,21 +157,6 @@ class WeeklyScheduleForm(StyledFormMixin, forms.ModelForm):
 
 
 class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
-    DOCUMENT_TYPE_CHOICES = [
-        ("CC", "Cedula de ciudadania"),
-        ("CE", "Cedula de extranjeria"),
-        ("TI", "Tarjeta de identidad"),
-        ("NIT", "NIT"),
-        ("PAS", "Pasaporte"),
-        ("PPT", "Permiso por proteccion temporal"),
-        ("OTRO", "Otro"),
-    ]
-
-    employee_document_type = forms.ChoiceField(
-        label="Tipo documento",
-        choices=DOCUMENT_TYPE_CHOICES,
-        initial="CC",
-    )
     employee_identifier = forms.CharField(
         label="Numero documento",
         max_length=30,
@@ -221,7 +206,7 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
         job_role = self.cleaned_data["job_role"]
         line = ScheduleLine(
             schedule=self.schedule,
-            employee_document_type=self.cleaned_data["employee_document_type"],
+            employee_document_type="",
             employee_identifier=self.cleaned_data["employee_identifier"],
             employee_name=self.cleaned_data["employee_name"],
             department_code="",

@@ -526,7 +526,6 @@ class ScheduleDeleteViewTests(TestCase):
             reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
             {
                 "manual_add_submit": "1",
-                "manual-employee_document_type": "CC",
                 "manual-employee_identifier": "987654321",
                 "manual-employee_name": "Trabajador Manual",
                 "manual-job_role": str(self.job_role.pk),
@@ -538,7 +537,7 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, reverse("schedules:edit", kwargs={"pk": self.schedule.pk}))
         manual_line = ScheduleLine.objects.get(schedule=self.schedule, employee_identifier="987654321")
-        self.assertEqual(manual_line.employee_document_type, "CC")
+        self.assertEqual(manual_line.employee_document_type, "")
         self.assertEqual(manual_line.employee_name, "Trabajador Manual")
         self.assertEqual(manual_line.job_role_name, self.job_role.name)
         self.assertEqual(manual_line.department_name, "")
@@ -556,6 +555,8 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertContains(response, "manual-add-disclosure", html=False)
         self.assertContains(response, "Agregar persona manualmente")
         self.assertNotContains(response, 'name="manual-department"', html=False)
+        self.assertNotContains(response, 'name="manual-employee_document_type"', html=False)
+        self.assertContains(response, "manual-add-submit-button", html=False)
 
     def test_schedule_edit_hides_area_column_and_shows_remove_action(self):
         self.client.login(username="operador_delete", password="secret")
@@ -593,7 +594,6 @@ class ScheduleDeleteViewTests(TestCase):
             reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
             {
                 "manual_add_submit": "1",
-                "manual-employee_document_type": "CC",
                 "manual-employee_identifier": self.line.employee_identifier,
                 "manual-employee_name": "Otro Nombre",
                 "manual-job_role": str(self.job_role.pk),
@@ -750,7 +750,6 @@ class ScheduleDeleteViewTests(TestCase):
             reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
             {
                 "manual_add_submit": "1",
-                "manual-employee_document_type": "CC",
                 "manual-employee_identifier": "111222333",
                 "manual-employee_name": "Manual Cerrado",
                 "manual-job_role": str(self.job_role.pk),
