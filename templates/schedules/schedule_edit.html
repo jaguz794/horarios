@@ -1,0 +1,239 @@
+{% extends 'base.html' %}
+{% load static schedule_tags %}
+
+{% block title %}Editar Horario | Portal de Horarios{% endblock %}
+{% block page_title %}{{ schedule.site.name }}{% endblock %}
+{% block page_subtitle %}Semana del {{ schedule.week_start_date }} al {{ schedule.week_end_date }}. Aqui se programan turnos, extras y pendientes por trabajador.{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Resumen de captura</h2>
+      <p>Primer dia configurado: {{ schedule.get_first_day_index_display }}.</p>
+      {% if schedule_closed %}
+      <p class="closed-note">Este horario esta publicado y quedo cerrado para edicion.</p>
+      {% endif %}
+    </div>
+    <div class="header-actions">
+      {% if not schedule_closed %}
+      <form method="post" action="{% url 'schedules:refresh' schedule.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="ghost-button">Recargar personal</button>
+      </form>
+      {% endif %}
+      {% if can_delete_schedules %}
+      <form method="post" action="{% url 'schedules:delete' schedule.pk %}" onsubmit="return confirm('Se eliminara este horario y todos sus registros. Deseas continuar?');">
+        {% csrf_token %}
+        <button type="submit" class="danger-button">Eliminar horario</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not schedule_closed %}
+  <form method="post" class="manual-add-form">
+    {% csrf_token %}
+    <div class="panel-subsection">
+      <div class="panel-subsection-header">
+        <div>
+          <h3>Agregar persona manualmente</h3>
+          <p>Usa esta opcion cuando el trabajador no aparezca en la carga automatica de la sede.</p>
+        </div>
+        <button type="submit" class="ghost-button" name="manual_add_submit" value="1">Agregar persona</button>
+      </div>
+      {% if manual_add_form.non_field_errors %}
+      <div class="row-errors">{{ manual_add_form.non_field_errors }}</div>
+      {% endif %}
+      <div class="field-grid manual-add-grid">
+        {% for field in manual_add_form %}
+        <label class="field-group">
+          <span>{{ field.label }}</span>
+          {{ field }}
+          {{ field.errors }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+  </form>
+  {% endif %}
+
+  <form method="post" class="stack-form">
+    {% csrf_token %}
+    {{ line_formset.management_form }}
+    <div class="field-grid compact-grid">
+      {% for field in schedule_form %}
+      <label class="field-group">
+        <span>{{ field.label }}</span>
+        {{ field }}
+        {{ field.errors }}
+      </label>
+      {% endfor %}
+    </div>
+
+    <div class="table-wrap wide-wrap schedule-grid-wrap">
+      <table
+        class="schedule-table"
+        data-night-start="{{ config.night_shift_start|time:'H:i' }}"
+        data-default-weekly-hours="{{ config.default_weekly_hours }}"
+        data-default-daily-max="{{ config.default_daily_max_hours }}"
+        data-show-night-hours="{% if show_night_hours %}true{% else %}false{% endif %}"
+        data-show-detailed-alerts="{% if show_detailed_alerts %}true{% else %}false{% endif %}"
+        data-schedule-closed="{% if schedule_closed %}true{% else %}false{% endif %}"
+      >
+        <thead>
+          <tr>
+            <th>Documento</th>
+            <th>Empleado</th>
+            <th>Area</th>
+            <th>Cargo</th>
+            {% for column in day_columns %}
+            <th>
+              <div>{{ column.label }}</div>
+              <small>{{ column.date }}</small>
+            </th>
+            {% endfor %}
+            <th>Total</th>
+            <th>Extras</th>
+            {% if show_night_hours %}
+            <th>Rec. noct.</th>
+            {% endif %}
+            <th>Fechas pendientes</th>
+            <th>Dias pend.</th>
+            <th>Horas pend.</th>
+            <th>
+              <span
+                class="help-label"
+                title="Saldo acumulado en horas. Suma los dias pendientes, las horas pendientes y las extras calculadas; resta los pagos aplicados en esta semana. Si da 0, queda conciliado. Si da positivo, aun queda saldo por pagar. Si da negativo, se pago mas de lo acumulado."
+              >
+                Delta
+              </span>
+            </th>
+            <th class="{% if show_detailed_alerts %}alerts-column alerts-column--detailed{% else %}alerts-column{% endif %}">
+              <span
+                class="help-label"
+                title="{% if show_detailed_alerts %}Avisos del sistema sobre esa fila. Por ejemplo, si un dia supera el maximo permitido, si el total semanal supera la meta, si las fechas pendientes no coinciden con los dias pendientes o si se intenta pagar sin saldo previo disponible.{% else %}Resumen rapido de los puntos principales que debes revisar en esa fila.{% endif %}"
+              >
+                Alertas
+              </span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line_form in line_formset %}
+          <tr
+            class="schedule-row"
+            data-weekly-target="{{ line_form.instance.weekly_target_hours }}"
+            data-daily-max="{{ line_form.instance.daily_max_hours }}"
+            data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance }}"
+            data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance }}"
+            data-prior-total-balance="{{ line_form.balance_snapshot.prior_total_balance }}"
+            data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
+          >
+            <td>
+              {{ line_form.id }}
+              {% if line_form.instance.employee_document_type %}
+              <small class="document-chip">{{ line_form.instance.employee_document_type }}</small>
+              {% endif %}
+              <div>{{ line_form.instance.employee_identifier }}</div>
+            </td>
+            <td>{{ line_form.instance.employee_name }}</td>
+            <td>{{ line_form.instance.department_name }}</td>
+            <td>{{ line_form.instance.job_role_name }}</td>
+            {% for column in day_columns %}
+            {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name %}
+            <td data-day-index="{{ column.index }}">
+              <div class="turn-cell">
+                {{ shift_1 }}
+                {{ shift_2 }}
+                <div class="day-payment">
+                  {{ compensation_mode }}
+                  <div class="day-payment-hours" data-pay-hours-wrap>
+                    {{ compensation_hours }}
+                  </div>
+                  <small class="payment-info" data-payment-info hidden></small>
+                </div>
+                {{ shift_1.errors }}
+                {{ shift_2.errors }}
+                {{ compensation_mode.errors }}
+                {{ compensation_hours.errors }}
+                <small class="day-hours" data-day-hours>{{ line_form.instance|attr:column.hours_attr|hours_int }} h</small>
+                {% if show_night_hours %}
+                <small class="day-night" data-day-night></small>
+                {% endif %}
+              </div>
+            </td>
+            {% endwith %}
+            {% endfor %}
+            <td class="metric-cell" data-total-hours>{{ line_form.instance.total_hours|hours_int }}</td>
+            <td class="metric-cell" data-overtime-hours>{{ line_form.instance.overtime_hours|hours_int }}</td>
+            {% if show_night_hours %}
+            <td class="metric-cell" data-night-hours>{{ line_form.instance.night_bonus_hours|hours_int }}</td>
+            {% endif %}
+            <td>
+              <div class="pending-cell">
+                {{ line_form.pending_dates_note }}
+                {{ line_form.pending_dates_note.errors }}
+              </div>
+            </td>
+            <td>
+              <div class="pending-cell pending-cell--compact pending-cell--days">
+                {{ line_form.pending_days }}
+                {{ line_form.pending_days.errors }}
+              </div>
+            </td>
+            <td>
+              <div class="pending-cell pending-cell--compact pending-cell--hours">
+                {{ line_form.pending_hours }}
+                {{ line_form.pending_hours.errors }}
+              </div>
+            </td>
+            <td class="delta-cell" data-pending-variance>{{ line_form.instance.pending_hours_variance|hours_int }}</td>
+            <td class="{% if show_detailed_alerts %}alerts-cell alerts-cell--detailed{% else %}alerts-cell{% endif %}">
+              <small
+                class="balance-note"
+                data-balance-note
+                data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance }}"
+                data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance }}"
+                data-prior-day-hours="{{ line_form.balance_snapshot.prior_day_equivalent_hours }}"
+                data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
+              >
+                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) ({{ line_form.balance_snapshot.prior_day_equivalent_hours|hours_int }} h) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h.
+              </small>
+              <small class="live-summary" data-live-summary></small>
+              {% if line_form.non_field_errors %}
+              <div class="row-errors">{{ line_form.non_field_errors }}</div>
+              {% endif %}
+              {% if line_form.instance.validation_summary %}
+              <small>
+                {% if show_detailed_alerts %}
+                {{ line_form.instance.validation_summary }}
+                {% else %}
+                {{ line_form.compact_alert_summary }}
+                {% endif %}
+              </small>
+              {% else %}
+              <small>Sin alertas</small>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="{% if show_night_hours %}18{% else %}17{% endif %}">Esta sede no tiene personal cargado todavia.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if not schedule_closed %}
+    <button type="submit" class="primary-button">Guardar cambios</button>
+    {% endif %}
+  </form>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+{{ shift_metrics|json_script:"shift-metrics-data" }}
+<script src="{% static 'js/schedule-form.js' %}"></script>
+{% endblock %}

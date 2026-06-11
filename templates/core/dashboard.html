@@ -1,0 +1,85 @@
+{% extends 'base.html' %}
+
+{% block title %}Inicio | Portal de Horarios{% endblock %}
+{% block page_title %}Vista General{% endblock %}
+{% block page_subtitle %}Resumen rapido del estado operativo del portal de horarios.{% endblock %}
+
+{% block content %}
+<section class="stats-grid">
+  <article class="stat-card stat-card--tooltip">
+    <span>Sedes activas</span>
+    <strong>{{ site_count }}</strong>
+    <div class="stat-tooltip stat-tooltip--compact">
+      <small>Disponibles para programar en el portal.</small>
+    </div>
+  </article>
+  <article class="stat-card stat-card--tooltip">
+    <span>Horarios creados</span>
+    <strong>{{ schedule_count }}</strong>
+    <div class="stat-tooltip stat-tooltip--compact">
+      <small>{{ published_count }} publicados y {{ draft_count }} borrador(es).</small>
+    </div>
+  </article>
+  <article class="stat-card stat-card--tooltip">
+    <span>Borradores</span>
+    <strong>{{ draft_count }}</strong>
+    <div class="stat-tooltip stat-tooltip--compact">
+      <small>{{ review_count }} en revision.</small>
+    </div>
+  </article>
+  <article class="stat-card stat-card--tooltip">
+    <span class="stat-card-label">Alertas</span>
+    <strong>{{ warning_count }}</strong>
+    <div class="stat-tooltip">
+      <strong>Resumen por horario</strong>
+      <small class="stat-tooltip-intro">{{ warning_schedule_count }} horario(s) con novedades en {{ warning_line_count }} colaborador(es).</small>
+      {% if dashboard_alert_items %}
+      <ul class="stat-tooltip-list">
+        {% for item in dashboard_alert_items %}
+        <li>
+          <span>{{ item.site_name }} · {{ item.week_label }}</span>
+          <small>{{ item.warning_total }} alerta(s) en {{ item.warning_line_count }} colaborador(es).</small>
+          <small>{{ item.summary_text }}</small>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <small>Sin alertas activas en los horarios visibles.</small>
+      {% endif %}
+    </div>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Ultimos horarios</h2>
+      <p>Acceso rapido a las semanas que se han venido trabajando.</p>
+    </div>
+    <a href="{% url 'schedules:load' %}" class="primary-button">Nuevo horario</a>
+  </div>
+  <div class="list-grid">
+    {% for schedule in recent_schedules %}
+    <article class="list-card list-card--tooltip">
+      <span class="pill">{{ schedule.get_status_display }}</span>
+      <h3>{{ schedule.site.name }}</h3>
+      <p>Semana {{ schedule.week_start_date }} a {{ schedule.week_end_date }}</p>
+      <div class="list-card-summary-float">
+        <small>{{ schedule.dashboard_line_count }} persona(s) cargadas.</small>
+        <small>
+          {% if schedule.dashboard_warning_total %}
+          {{ schedule.dashboard_warning_total }} alerta(s) en {{ schedule.dashboard_warning_line_count }} colaborador(es).
+          {% else %}
+          Sin alertas activas.
+          {% endif %}
+        </small>
+        <small>{{ schedule.dashboard_summary_text }}</small>
+      </div>
+      <a href="{% url 'schedules:edit' schedule.pk %}" class="text-link">Abrir horario</a>
+    </article>
+    {% empty %}
+    <p>No hay horarios creados todavia.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

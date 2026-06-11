@@ -1,0 +1,20 @@
+<div class="multi-date-widget">
+  <input
+    type="hidden"
+    name="{{ widget.name }}"
+    {% if widget.attrs.id %}id="{{ widget.attrs.id }}"{% endif %}
+    value="{{ widget.value|default:'' }}"
+  >
+  <div class="multi-date-toolbar">
+    <input
+      type="date"
+      class="input multi-date-picker"
+    >
+    <button type="button" class="ghost-button multi-date-add">Agregar</button>
+  </div>
+  <div class="multi-date-list">
+    {% for item in widget.date_values %}
+    <button type="button" class="multi-date-chip" data-value="{{ item }}">{{ item }}</button>
+    {% endfor %}
+  </div>
+</div>

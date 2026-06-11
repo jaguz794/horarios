@@ -1,0 +1,62 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Portal de Horarios{% endblock %}</title>
+  <link rel="icon" type="image/png" href="{% static 'img/logo-popular.png' %}">
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="{% static 'img/logo-popular.png' %}" alt="Supermercados Popular" class="brand-logo">
+        <div>
+          <strong>Portal de Horarios</strong>
+          <p>Supermercados Popular</p>
+        </div>
+      </div>
+      {% if request.user.is_authenticated %}
+      <nav class="sidebar-nav">
+        <a href="{% url 'dashboard' %}" class="nav-link">Inicio</a>
+        <a href="{% url 'site-list' %}" class="nav-link">Sedes</a>
+        <a href="{% url 'schedules:list' %}" class="nav-link">Horarios</a>
+        {% if request.user.is_staff %}
+        <a href="/admin/" class="nav-link">Administracion</a>
+        {% endif %}
+      </nav>
+      <div class="sidebar-footer">
+        <p>{{ request.user.username }}</p>
+        <form method="post" action="{% url 'logout' %}">
+          {% csrf_token %}
+          <button type="submit" class="ghost-button">Cerrar sesion</button>
+        </form>
+      </div>
+      {% endif %}
+    </aside>
+
+    <main class="content">
+      <header class="page-header">
+        <div>
+          <h1>{% block page_title %}Portal de Horarios{% endblock %}</h1>
+          <p>{% block page_subtitle %}Gestion de horarios por sede y semana.{% endblock %}</p>
+        </div>
+      </header>
+
+      {% if messages %}
+      <section class="messages">
+        {% for message in messages %}
+        <article class="message {{ message.tags }}">{{ message }}</article>
+        {% endfor %}
+      </section>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>

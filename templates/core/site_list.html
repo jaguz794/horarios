@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+
+{% block title %}Sedes | Portal de Horarios{% endblock %}
+{% block page_title %}Sedes{% endblock %}
+{% block page_subtitle %}Selecciona la sede o CO desde donde quieres iniciar la programacion semanal.{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Catalogo de sedes</h2>
+      <p>Estas sedes estan disponibles para la programacion semanal.</p>
+    </div>
+    <a href="{% url 'schedules:load' %}" class="primary-button">Nuevo horario</a>
+  </div>
+  <div class="site-grid">
+    {% for site in sites %}
+    <article class="site-card">
+      <div class="site-code">{{ site.code }}</div>
+      <h3>{{ site.name }}</h3>
+      <p>Sede activa para programacion.</p>
+      <small>{{ site.schedule_count }} horarios registrados</small>
+      <a href="{% url 'schedules:load' %}?site={{ site.pk }}" class="text-link">Programar esta sede</a>
+    </article>
+    {% empty %}
+    <p>No hay sedes cargadas en el catalogo.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

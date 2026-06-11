@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+
+{% block title %}Horarios | Portal de Horarios{% endblock %}
+{% block page_title %}Horarios{% endblock %}
+{% block page_subtitle %}Consulta y edita las semanas programadas por sede.{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Semanas registradas</h2>
+      <p>Cada horario queda almacenado por sede y fecha inicial.</p>
+    </div>
+    <a href="{% url 'schedules:load' %}" class="primary-button">Cargar horario</a>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Sede</th>
+          <th>Inicio</th>
+          <th>Fin</th>
+          <th>Estado</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for schedule in schedules %}
+        <tr>
+          <td>{{ schedule.site.name }}</td>
+          <td>{{ schedule.week_start_date }}</td>
+          <td>{{ schedule.week_end_date }}</td>
+          <td><span class="pill">{{ schedule.get_status_display }}</span></td>
+          <td class="actions-cell">
+            <a href="{% url 'schedules:edit' schedule.pk %}" class="text-link">
+              {% if schedule.is_closed %}Ver{% else %}Editar{% endif %}
+            </a>
+            {% if can_delete_schedules %}
+            <form method="post" action="{% url 'schedules:delete' schedule.pk %}" onsubmit="return confirm('Se eliminara este horario y todos sus registros. ¿Deseas continuar?');">
+              {% csrf_token %}
+              <button type="submit" class="text-link text-link-danger plain-action-button">Eliminar</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="5">No hay horarios creados todavia.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

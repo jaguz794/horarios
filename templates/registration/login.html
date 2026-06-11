@@ -1,0 +1,39 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ingresar | Portal de Horarios</title>
+  <link rel="icon" type="image/png" href="{% static 'img/logo-popular.png' %}">
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="login-hero">
+      <img src="{% static 'img/logo-popular.png' %}" alt="Popular" class="login-logo">
+      <span class="eyebrow">Portal web</span>
+      <h1>Horarios Supermercado Popular</h1>
+      <p>Ingreso de horarios de personal, programacion de turnos y horas.</p>
+    </div>
+    <section class="login-form-panel">
+      <h2>Acceso</h2>
+      <form method="post">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <label class="field-group">
+          <span>Usuario</span>
+          {{ form.username }}
+          {{ form.username.errors }}
+        </label>
+        <label class="field-group">
+          <span>Contrasena</span>
+          {{ form.password }}
+          {{ form.password.errors }}
+        </label>
+        <button type="submit" class="primary-button wide-button">Entrar</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
