@@ -24,6 +24,8 @@ class Site(TimeStampedModel):
     class Meta:
         ordering = ["code"]
         db_table = "sedes"
+        verbose_name = "Sede"
+        verbose_name_plural = "Sedes"
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
@@ -69,6 +71,8 @@ class Department(TimeStampedModel):
     class Meta:
         ordering = ["name"]
         db_table = "areas"
+        verbose_name = "Departamento"
+        verbose_name_plural = "Departamentos"
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
@@ -92,6 +96,8 @@ class JobRole(TimeStampedModel):
     class Meta:
         ordering = ["name"]
         db_table = "parametros_cargos"
+        verbose_name = "Cargo"
+        verbose_name_plural = "Cargos"
 
     def __str__(self) -> str:
         return self.name
@@ -119,6 +125,8 @@ class ShiftTemplate(TimeStampedModel):
     class Meta:
         ordering = ["display_order", "label"]
         db_table = "catalogo_turnos"
+        verbose_name = "Turno"
+        verbose_name_plural = "Turnos"
 
     def __str__(self) -> str:
         return self.label

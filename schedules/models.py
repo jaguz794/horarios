@@ -41,6 +41,8 @@ class WeeklySchedule(TimeStampedModel):
         ordering = ["-week_start_date", "site__code"]
         unique_together = ("site", "week_start_date")
         db_table = "horarios_semanales"
+        verbose_name = "Horario semanal"
+        verbose_name_plural = "Horarios semanales"
 
     def __str__(self) -> str:
         return f"{self.site.name} - {self.week_start_date:%Y-%m-%d}"
@@ -147,6 +149,8 @@ class ScheduleLine(TimeStampedModel):
         ordering = ["job_role_name", "employee_name", "department_name"]
         unique_together = ("schedule", "employee_identifier")
         db_table = "horarios_detalle"
+        verbose_name = "Detalle de horario"
+        verbose_name_plural = "Detalle de horarios"
 
     def __str__(self) -> str:
         return f"{self.employee_identifier} - {self.employee_name}"
