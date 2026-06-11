@@ -1,0 +1,22 @@
+#!/bin/sh
+set -u
+
+if [ "${SKIP_AUTO_PUSH:-0}" = "1" ]; then
+  exit 0
+fi
+
+if ! git config --get remote.origin.url >/dev/null 2>&1; then
+  exit 0
+fi
+
+branch="$(git branch --show-current 2>/dev/null || true)"
+if [ -z "$branch" ]; then
+  exit 0
+fi
+
+echo "Auto-push: enviando cambios de $branch a origin..."
+if ! git push origin "$branch"; then
+  echo "Aviso: el commit se creo, pero el push automatico fallo. Revisa tus credenciales o la conexion."
+fi
+
+exit 0

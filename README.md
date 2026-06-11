@@ -151,6 +151,7 @@ El paso a paso detallado para:
 - entender que tablas crea Django,
 - conectar GitHub,
 - configurar Debian para descargar desde Git,
+- separar instalacion inicial y actualizacion normal,
 - y dejar el despliegue automatico,
 
 esta en:

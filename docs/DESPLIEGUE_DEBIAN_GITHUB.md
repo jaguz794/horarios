@@ -175,6 +175,29 @@ git remote add origin git@github.com:TU_USUARIO/horarios.git
 git push -u origin master
 ```
 
+### 7.3. Dejar el push automatico despues de cada commit
+
+En tu equipo local, dentro del proyecto:
+
+```bash
+git config core.hooksPath .githooks
+git config push.autoSetupRemote true
+```
+
+Con eso, cada vez que se cree un commit local, el hook:
+
+- detecta la rama actual
+- ejecuta `git push origin rama_actual`
+- deja a GitHub Actions disparar la actualizacion del servidor
+
+Si quieres publicar manualmente con un solo comando, usa:
+
+```powershell
+.\scripts\publicar.ps1 -Mensaje "Describe el cambio"
+```
+
+Si no mandas mensaje, el script genera uno con fecha y hora.
+
 ## 8. Preparar el servidor Debian para bajar desde Git
 
 ### 8.1. Instalar Git y Docker
@@ -255,21 +278,62 @@ El contenedor:
 - ejecuta `collectstatic`
 - arranca Gunicorn
 
-## 10. Crear el administrador
+## 10. Flujo separado y automatizado
+
+### 10.1. Instalacion inicial
+
+Haz esto solo la primera vez, o cuando montes un servidor nuevo:
+
+```bash
+cd /opt/horarios/app
+chmod +x scripts/servidor_instalacion_inicial.sh scripts/servidor_actualizar.sh
+./scripts/servidor_instalacion_inicial.sh /ruta/al/turnos.xlsx
+```
+
+Ese script hace:
+
+1. levanta o reconstruye la aplicacion
+2. sincroniza sedes, areas y cargos desde la base externa
+3. copia el Excel de turnos al contenedor
+4. importa los turnos al catalogo
+
+### 10.2. Actualizacion normal
+
+Para actualizaciones del portal sin recargar catalogos:
+
+```bash
+cd /opt/horarios/app
+./scripts/servidor_actualizar.sh master
+```
+
+Ese script hace:
+
+1. `git fetch`
+2. `git pull`
+3. `docker compose up -d --build`
+
+## 11. Crear el administrador
 
 ```bash
 docker compose exec web python manage.py createsuperuser
 ```
 
-## 11. Cargar catalogos de sedes y cargos
+## 12. Cargar catalogos manualmente cuando sea necesario
 
 ```bash
 docker compose exec web python manage.py sync_legacy_catalogs
 ```
 
-## 12. Como desplegar cambios nuevos
+Y si cambian los turnos:
 
-### 12.1. Flujo local hacia GitHub
+```bash
+docker cp /ruta/al/turnos.xlsx $(docker compose ps -q web):/tmp/turnos.xlsx
+docker compose exec web python manage.py import_shift_templates --file /tmp/turnos.xlsx
+```
+
+## 13. Como desplegar cambios nuevos
+
+### 13.1. Flujo local hacia GitHub
 
 En local:
 
@@ -293,15 +357,16 @@ git pull origin master
 docker compose up -d --build
 ```
 
-### 12.2. Flujo automatico con GitHub Actions
+### 13.2. Flujo automatico con GitHub Actions
 
 El repo ya quedo con este workflow:
 
 - `.github/workflows/deploy.yml`
 
-Y con este script:
+Y con estos scripts:
 
-- `docker/deploy.sh`
+- `scripts/servidor_actualizar.sh`
+- `scripts/servidor_instalacion_inicial.sh`
 
 Para activarlo debes crear estos secretos en GitHub:
 
@@ -317,7 +382,7 @@ Luego, cada `push` a `master` o `main` ejecuta:
 3. `git pull`
 4. `docker compose up -d --build`
 
-## 13. Verificaciones recomendadas
+## 14. Verificaciones recomendadas
 
 En servidor:
 
