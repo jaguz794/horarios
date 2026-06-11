@@ -11,14 +11,30 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     if: github.ref_name == 'master' || github.ref_name == 'main'
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
     steps:
+      - name: Validar secretos de despliegue
+        shell: bash
+        run: |
+          set -eu
+          [ -n "${DEPLOY_HOST}" ] || { echo "Falta el secreto DEPLOY_HOST"; exit 1; }
+          [ -n "${DEPLOY_USER}" ] || { echo "Falta el secreto DEPLOY_USER"; exit 1; }
+          [ -n "${DEPLOY_SSH_KEY}" ] || { echo "Falta el secreto DEPLOY_SSH_KEY"; exit 1; }
+          if [ -z "${DEPLOY_PORT}" ]; then
+            echo "DEPLOY_PORT no fue definido. Se usara 22."
+          fi
+
       - name: Ejecutar despliegue remoto por SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          host: ${{ env.DEPLOY_HOST }}
+          username: ${{ env.DEPLOY_USER }}
+          key: ${{ env.DEPLOY_SSH_KEY }}
+          port: ${{ env.DEPLOY_PORT || 22 }}
           script: |
             cd /opt/horarios/app
             chmod +x scripts/servidor_actualizar.sh
