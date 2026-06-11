@@ -7,35 +7,28 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: deploy-horarios
+  cancel-in-progress: true
+
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    timeout-minutes: 20
     if: github.ref_name == 'master' || github.ref_name == 'main'
-    env:
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
     steps:
-      - name: Validar secretos de despliegue
+      - name: Validar entorno del runner
         shell: bash
         run: |
           set -eu
-          [ -n "${DEPLOY_HOST}" ] || { echo "Falta el secreto DEPLOY_HOST"; exit 1; }
-          [ -n "${DEPLOY_USER}" ] || { echo "Falta el secreto DEPLOY_USER"; exit 1; }
-          [ -n "${DEPLOY_SSH_KEY}" ] || { echo "Falta el secreto DEPLOY_SSH_KEY"; exit 1; }
-          if [ -z "${DEPLOY_PORT}" ]; then
-            echo "DEPLOY_PORT no fue definido. Se usara 22."
-          fi
+          [ -d /opt/horarios/app ] || { echo "No existe /opt/horarios/app"; exit 1; }
+          command -v git >/dev/null 2>&1 || { echo "Git no esta instalado en el runner"; exit 1; }
+          command -v docker >/dev/null 2>&1 || { echo "Docker no esta instalado en el runner"; exit 1; }
+          docker compose version >/dev/null 2>&1 || { echo "Docker Compose plugin no esta disponible"; exit 1; }
 
-      - name: Ejecutar despliegue remoto por SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ env.DEPLOY_SSH_KEY }}
-          port: ${{ env.DEPLOY_PORT || 22 }}
-          script: |
-            cd /opt/horarios/app
-            chmod +x scripts/servidor_actualizar.sh
-            ./scripts/servidor_actualizar.sh ${{ github.ref_name }}
+      - name: Ejecutar despliegue local
+        shell: bash
+        run: |
+          cd /opt/horarios/app
+          chmod +x scripts/servidor_actualizar.sh
+          ./scripts/servidor_actualizar.sh ${{ github.ref_name }}

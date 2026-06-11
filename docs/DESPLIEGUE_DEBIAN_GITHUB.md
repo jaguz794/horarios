@@ -231,7 +231,7 @@ sudo chown $USER:$USER /opt/horarios
 cd /opt/horarios
 ```
 
-### 8.3. Configurar clave SSH en el servidor
+### 8.3. Configurar clave SSH del servidor hacia GitHub
 
 ```bash
 ssh-keygen -t ed25519 -C "deploy-horarios"
@@ -263,6 +263,45 @@ nano .env
 ```
 
 Pega el `.env` del punto 6.
+
+### 8.6. Instalar un self-hosted runner en Debian
+
+Como tu servidor esta en una red local o en una VM con IP privada, GitHub en la nube no puede entrar por SSH directamente. La forma correcta es instalar un `self-hosted runner` dentro de la misma VM o dentro de la misma red.
+
+En GitHub:
+
+1. Entra al repositorio `horarios`
+2. Ve a `Settings`
+3. Ve a `Actions`
+4. Entra a `Runners`
+5. Pulsa `New self-hosted runner`
+6. Escoge `Linux` y `x64`
+
+En Debian, ejecuta los comandos que GitHub te muestre. El flujo sera parecido a este:
+
+```bash
+mkdir -p /opt/github-runner
+cd /opt/github-runner
+curl -o actions-runner-linux-x64.tar.gz -L https://github.com/actions/runner/releases/download/<VERSION>/actions-runner-linux-x64-<VERSION>.tar.gz
+tar xzf actions-runner-linux-x64.tar.gz
+./config.sh --url https://github.com/TU_USUARIO/horarios --token TU_TOKEN
+sudo ./svc.sh install
+sudo ./svc.sh start
+sudo ./svc.sh status
+```
+
+Recomendaciones:
+
+- instala el runner en la misma VM donde esta `/opt/horarios/app`
+- usa un usuario que tenga permiso para ejecutar `git` y `docker`
+- si usas un usuario distinto a `root`, agregalo al grupo `docker`
+
+Si hace falta:
+
+```bash
+sudo usermod -aG docker TU_USUARIO
+newgrp docker
+```
 
 ## 9. Levantar la aplicacion en el servidor
 
@@ -368,19 +407,16 @@ Y con estos scripts:
 - `scripts/servidor_actualizar.sh`
 - `scripts/servidor_instalacion_inicial.sh`
 
-Para activarlo debes crear estos secretos en GitHub:
+Con el runner ya instalado, cada `push` a `master` o `main` ejecuta:
 
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_PORT`
-- `DEPLOY_SSH_KEY`
+1. el runner local toma el trabajo dentro de tu red
+2. entra a `/opt/horarios/app`
+3. ejecuta `scripts/servidor_actualizar.sh`
+4. hace `git fetch`
+5. hace `git pull`
+6. ejecuta `docker compose up -d --build`
 
-Luego, cada `push` a `master` o `main` ejecuta:
-
-1. conexion SSH al servidor
-2. `git fetch`
-3. `git pull`
-4. `docker compose up -d --build`
+Ya no necesitas exponer el puerto `22` a internet ni configurar secretos de SSH de GitHub hacia tu servidor.
 
 ## 14. Verificaciones recomendadas
 
