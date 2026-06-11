@@ -542,6 +542,35 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(manual_line.employee_name, "Trabajador Manual")
         self.assertEqual(manual_line.job_role_name, self.job_role.name)
 
+    def test_schedule_edit_hides_area_column_and_shows_remove_action(self):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "<th>Area</th>", html=False)
+        self.assertContains(response, "Retirar")
+
+    def test_site_user_can_remove_schedule_line(self):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "remove_line_id": str(self.line.pk),
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("schedules:edit", kwargs={"pk": self.schedule.pk}))
+        self.assertFalse(ScheduleLine.objects.filter(pk=self.line.pk).exists())
+
     def test_manual_schedule_line_rejects_duplicate_document(self):
         self.client.login(username="operador_delete", password="secret")
 
@@ -720,3 +749,20 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertFalse(
             ScheduleLine.objects.filter(schedule=self.schedule, employee_identifier="111222333").exists()
         )
+
+    def test_published_schedule_rejects_remove_line(self):
+        self.schedule.status = WeeklySchedule.Status.PUBLISHED
+        self.schedule.save()
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "remove_line_id": str(self.line.pk),
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(ScheduleLine.objects.filter(pk=self.line.pk).exists())

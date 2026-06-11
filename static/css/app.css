@@ -557,6 +557,11 @@ textarea:focus {
   vertical-align: top;
 }
 
+.schedule-table th,
+.schedule-table td {
+  font-size: 0.92rem;
+}
+
 .data-table thead,
 .schedule-table thead {
   background: linear-gradient(180deg, #f6f7ba 0%, #ecf5c8 100%);
@@ -574,6 +579,51 @@ textarea:focus {
   min-width: 170px;
   display: grid;
   gap: 6px;
+}
+
+.schedule-col-document,
+.schedule-cell-document {
+  min-width: 110px;
+}
+
+.schedule-col-employee,
+.schedule-cell-employee {
+  min-width: 220px;
+  max-width: 260px;
+}
+
+.schedule-cell-employee,
+.schedule-cell-role {
+  font-size: 0.86rem;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.schedule-col-role,
+.schedule-cell-role {
+  min-width: 150px;
+  max-width: 190px;
+}
+
+.schedule-col-actions,
+.schedule-cell-actions {
+  min-width: 86px;
+  width: 86px;
+}
+
+.table-action-button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: #b33a28;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.table-action-button:hover {
+  text-decoration: underline;
 }
 
 .day-payment {

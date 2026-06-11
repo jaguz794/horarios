@@ -83,10 +83,10 @@
       >
         <thead>
           <tr>
-            <th>Documento</th>
-            <th>Empleado</th>
-            <th>Area</th>
-            <th>Cargo</th>
+            <th class="schedule-col-document">Documento</th>
+            <th class="schedule-col-employee">Empleado</th>
+            <th class="schedule-col-role">Cargo</th>
+            <th class="schedule-col-actions">Acciones</th>
             {% for column in day_columns %}
             <th>
               <div>{{ column.label }}</div>
@@ -130,16 +130,30 @@
             data-prior-total-balance="{{ line_form.balance_snapshot.prior_total_balance }}"
             data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
           >
-            <td>
+            <td class="schedule-cell-document">
               {{ line_form.id }}
               {% if line_form.instance.employee_document_type %}
               <small class="document-chip">{{ line_form.instance.employee_document_type }}</small>
               {% endif %}
               <div>{{ line_form.instance.employee_identifier }}</div>
             </td>
-            <td>{{ line_form.instance.employee_name }}</td>
-            <td>{{ line_form.instance.department_name }}</td>
-            <td>{{ line_form.instance.job_role_name }}</td>
+            <td class="schedule-cell-employee">{{ line_form.instance.employee_name }}</td>
+            <td class="schedule-cell-role">{{ line_form.instance.job_role_name }}</td>
+            <td class="schedule-cell-actions">
+              {% if not schedule_closed %}
+              <button
+                type="submit"
+                class="table-action-button"
+                name="remove_line_id"
+                value="{{ line_form.instance.pk }}"
+                onclick="return confirm('Se retirara a {{ line_form.instance.employee_name|escapejs }} de este horario. Deseas continuar?');"
+              >
+                Retirar
+              </button>
+              {% else %}
+              <small>Cerrado</small>
+              {% endif %}
+            </td>
             {% for column in day_columns %}
             {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name %}
             <td data-day-index="{{ column.index }}">
@@ -219,7 +233,7 @@
           </tr>
           {% empty %}
           <tr>
-            <td colspan="{% if show_night_hours %}18{% else %}17{% endif %}">Esta sede no tiene personal cargado todavia.</td>
+            <td colspan="{% if show_night_hours %}19{% else %}18{% endif %}">Esta sede no tiene personal cargado todavia.</td>
           </tr>
           {% endfor %}
         </tbody>

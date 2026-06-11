@@ -16,7 +16,7 @@ from schedules.forms import (
     WeeklyScheduleForm,
     build_shift_choices,
 )
-from schedules.models import WeeklySchedule
+from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import build_shift_metrics_catalog, recalculate_schedule_line, sync_schedule_from_legacy
 
 
@@ -115,6 +115,16 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
         schedule = self.get_schedule()
         if schedule.is_closed:
             messages.error(request, "El horario publicado esta cerrado y ya no admite modificaciones.")
+            return redirect("schedules:edit", pk=schedule.pk)
+        remove_line_id = request.POST.get("remove_line_id", "").strip()
+        if remove_line_id:
+            line = get_object_or_404(ScheduleLine.objects.filter(schedule=schedule), pk=remove_line_id)
+            employee_name = line.employee_name
+            line.delete()
+            messages.success(
+                request,
+                f"Trabajador retirado del horario: {employee_name}.",
+            )
             return redirect("schedules:edit", pk=schedule.pk)
         if "manual_add_submit" in request.POST:
             manual_add_form = self.get_manual_add_form(schedule, data=request.POST, readonly=False)
