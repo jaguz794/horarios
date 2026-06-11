@@ -520,6 +520,33 @@ textarea:focus {
   margin-bottom: 18px;
 }
 
+.manual-add-disclosure {
+  margin-bottom: 18px;
+}
+
+.manual-add-summary {
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+  margin-bottom: 14px;
+  user-select: none;
+}
+
+.manual-add-summary::-webkit-details-marker {
+  display: none;
+}
+
+.manual-add-summary::before {
+  content: "+";
+  display: inline-block;
+  margin-right: 8px;
+  font-weight: 700;
+}
+
+.manual-add-disclosure[open] .manual-add-summary::before {
+  content: "-";
+}
+
 .manual-add-grid {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }

@@ -22,6 +22,7 @@ class SiteAdmin(admin.ModelAdmin):
     list_display = ("code", "name", "is_active")
     list_filter = ("is_active",)
     search_fields = ("code", "name")
+    ordering = ("code",)
 
 
 @admin.register(Department)
@@ -52,8 +53,15 @@ class ShiftTemplateAdmin(admin.ModelAdmin):
     search_fields = ("label", "code")
 
 
+class OrderedSitesChoicesMixin:
+    def formfield_for_manytomany(self, db_field, request, **kwargs):
+        if db_field.name == "sites":
+            kwargs["queryset"] = Site.objects.order_by("code")
+        return super().formfield_for_manytomany(db_field, request, **kwargs)
+
+
 @admin.register(UserSiteAccess)
-class UserSiteAccessAdmin(admin.ModelAdmin):
+class UserSiteAccessAdmin(OrderedSitesChoicesMixin, admin.ModelAdmin):
     list_display = ("user", "role", "allowed_sites")
     list_filter = ("role", "sites")
     search_fields = ("user__username", "user__first_name", "user__last_name", "user__email")
@@ -71,7 +79,7 @@ class UserSiteAccessAdmin(admin.ModelAdmin):
     allowed_sites.short_description = "Sedes asignadas"
 
 
-class UserSiteAccessInline(admin.StackedInline):
+class UserSiteAccessInline(OrderedSitesChoicesMixin, admin.StackedInline):
     model = UserSiteAccess
     fk_name = "user"
     can_delete = False
@@ -113,6 +121,11 @@ class UserAdmin(DjangoUserAdmin):
         "portal_role",
         "portal_sites",
     )
+
+    def get_inline_instances(self, request, obj=None):
+        if obj is None:
+            return []
+        return super().get_inline_instances(request, obj)
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("site_access").prefetch_related("site_access__sites")

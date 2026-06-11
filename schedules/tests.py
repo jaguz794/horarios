@@ -541,6 +541,21 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(manual_line.employee_document_type, "CC")
         self.assertEqual(manual_line.employee_name, "Trabajador Manual")
         self.assertEqual(manual_line.job_role_name, self.job_role.name)
+        self.assertEqual(manual_line.department_name, "")
+
+    def test_schedule_edit_collapses_manual_add_and_hides_area_field(self):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "manual-add-disclosure", html=False)
+        self.assertContains(response, "Agregar persona manualmente")
+        self.assertNotContains(response, 'name="manual-department"', html=False)
 
     def test_schedule_edit_hides_area_column_and_shows_remove_action(self):
         self.client.login(username="operador_delete", password="secret")

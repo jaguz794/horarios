@@ -32,30 +32,33 @@
   </div>
 
   {% if not schedule_closed %}
-  <form method="post" class="manual-add-form">
-    {% csrf_token %}
-    <div class="panel-subsection">
-      <div class="panel-subsection-header">
-        <div>
-          <h3>Agregar persona manualmente</h3>
-          <p>Usa esta opcion cuando el trabajador no aparezca en la carga automatica de la sede.</p>
+  <details class="manual-add-disclosure" {% if manual_add_open %}open{% endif %}>
+    <summary class="ghost-button manual-add-summary">Agregar persona manualmente</summary>
+    <form method="post" class="manual-add-form">
+      {% csrf_token %}
+      <div class="panel-subsection">
+        <div class="panel-subsection-header">
+          <div>
+            <h3>Agregar persona manualmente</h3>
+            <p>Usa esta opcion cuando el trabajador no aparezca en la carga automatica de la sede.</p>
+          </div>
+          <button type="submit" class="ghost-button" name="manual_add_submit" value="1">Agregar persona</button>
         </div>
-        <button type="submit" class="ghost-button" name="manual_add_submit" value="1">Agregar persona</button>
+        {% if manual_add_form.non_field_errors %}
+        <div class="row-errors">{{ manual_add_form.non_field_errors }}</div>
+        {% endif %}
+        <div class="field-grid manual-add-grid">
+          {% for field in manual_add_form %}
+          <label class="field-group">
+            <span>{{ field.label }}</span>
+            {{ field }}
+            {{ field.errors }}
+          </label>
+          {% endfor %}
+        </div>
       </div>
-      {% if manual_add_form.non_field_errors %}
-      <div class="row-errors">{{ manual_add_form.non_field_errors }}</div>
-      {% endif %}
-      <div class="field-grid manual-add-grid">
-        {% for field in manual_add_form %}
-        <label class="field-group">
-          <span>{{ field.label }}</span>
-          {{ field }}
-          {{ field.errors }}
-        </label>
-        {% endfor %}
-      </div>
-    </div>
-  </form>
+    </form>
+  </details>
   {% endif %}
 
   <form method="post" class="stack-form">

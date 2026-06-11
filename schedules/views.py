@@ -193,6 +193,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             "can_delete_schedules": user_can_delete_schedules(self.request.user),
             "show_night_hours": user_can_manage_all_sites(self.request.user),
             "show_detailed_alerts": user_can_manage_all_sites(self.request.user),
+            "manual_add_open": manual_add_form.is_bound,
             "schedule_closed": schedule_closed,
         }
 

@@ -107,4 +107,4 @@ class SiteListView(LoginRequiredMixin, ListView):
 
     def get_queryset(self):
         queryset = Site.objects.filter(is_active=True).annotate(schedule_count=Count("weekly_schedules"))
-        return get_accessible_sites_queryset(self.request.user, queryset)
+        return get_accessible_sites_queryset(self.request.user, queryset).order_by("code")

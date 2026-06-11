@@ -8,7 +8,7 @@ from django.forms import inlineformset_factory
 from django.utils import timezone
 
 from core.access import get_accessible_sites_queryset
-from core.models import Department, JobRole, ShiftTemplate, Site, SystemConfiguration
+from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
     get_schedule_line_balance_snapshot,
@@ -182,12 +182,6 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
         max_length=180,
         widget=forms.TextInput(attrs={"placeholder": "Nombre del trabajador"}),
     )
-    department = forms.ModelChoiceField(
-        queryset=Department.objects.none(),
-        label="Area",
-        required=False,
-        empty_label="Sin area",
-    )
     job_role = forms.ModelChoiceField(
         queryset=JobRole.objects.none(),
         label="Cargo",
@@ -197,7 +191,6 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
     def __init__(self, *args, schedule=None, readonly: bool = False, **kwargs):
         self.schedule = schedule
         super().__init__(*args, **kwargs)
-        self.fields["department"].queryset = Department.objects.filter(is_active=True).order_by("name")
         self.fields["job_role"].queryset = JobRole.objects.filter(is_active=True).order_by("name")
         self.apply_style()
         if readonly:
@@ -225,15 +218,14 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
 
     def save(self) -> ScheduleLine:
         config = SystemConfiguration.load()
-        department = self.cleaned_data.get("department")
         job_role = self.cleaned_data["job_role"]
         line = ScheduleLine(
             schedule=self.schedule,
             employee_document_type=self.cleaned_data["employee_document_type"],
             employee_identifier=self.cleaned_data["employee_identifier"],
             employee_name=self.cleaned_data["employee_name"],
-            department_code=(department.code or "").strip() if department else "",
-            department_name=department.name if department else "",
+            department_code="",
+            department_name="",
             job_role_code=(job_role.code or "").strip(),
             job_role_name=job_role.name,
             weekly_target_hours=job_role.weekly_target_hours or config.default_weekly_hours,

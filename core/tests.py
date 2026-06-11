@@ -1,11 +1,13 @@
 from datetime import date
 from decimal import Decimal
 
+from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.test import TestCase
 from django.urls import reverse
 
+from core.admin import UserSiteAccessAdmin
 from core.access import get_accessible_sites_queryset, user_can_manage_all_sites
 from core.models import Site, UserSiteAccess
 from schedules.models import ScheduleLine, WeeklySchedule
@@ -115,3 +117,85 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "2 alerta(s) en 1 colaborador(es).")
         self.assertContains(response, "Revisa horas semanales.")
         self.assertContains(response, "Revisa pendientes.")
+
+
+class SiteOrderingTests(TestCase):
+    def test_site_list_orders_codes_ascending(self):
+        user = User.objects.create_user(username="admin_sites", password="secret")
+        access = UserSiteAccess.objects.get(user=user)
+        access.role = UserSiteAccess.Role.ADMIN
+        access.save()
+        Site.objects.create(code="010", name="Diez")
+        Site.objects.create(code="002", name="Dos")
+        Site.objects.create(code="001", name="Uno")
+
+        self.client.login(username="admin_sites", password="secret")
+        response = self.client.get(
+            reverse("site-list"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            list(response.context["sites"].values_list("code", flat=True)),
+            ["001", "002", "010"],
+        )
+
+    def test_admin_sites_field_orders_codes_ascending(self):
+        Site.objects.create(code="010", name="Diez")
+        Site.objects.create(code="002", name="Dos")
+        Site.objects.create(code="001", name="Uno")
+
+        admin_instance = UserSiteAccessAdmin(UserSiteAccess, AdminSite())
+        form_field = admin_instance.formfield_for_manytomany(
+            UserSiteAccess._meta.get_field("sites"),
+            request=None,
+        )
+
+        self.assertEqual(
+            list(form_field.queryset.values_list("code", flat=True)),
+            ["001", "002", "010"],
+        )
+
+
+class UserAdminTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.admin_user = User.objects.create_superuser(
+            username="admin_users",
+            email="admin_users@example.com",
+            password="secret",
+        )
+
+    def test_admin_user_add_page_hides_site_access_inline(self):
+        self.client.login(username="admin_users", password="secret")
+
+        response = self.client.get(
+            reverse("admin:auth_user_add"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "site_access-TOTAL_FORMS", html=False)
+        self.assertNotContains(response, "Acceso al portal")
+
+    def test_admin_can_create_user_without_inline_management_form(self):
+        self.client.login(username="admin_users", password="secret")
+
+        response = self.client.post(
+            reverse("admin:auth_user_add"),
+            {
+                "username": "nuevo_usuario",
+                "password1": "ClaveSegura123!",
+                "password2": "ClaveSegura123!",
+                "_save": "Guardar",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(User.objects.filter(username="nuevo_usuario").exists())
+        self.assertTrue(UserSiteAccess.objects.filter(user__username="nuevo_usuario").exists())
