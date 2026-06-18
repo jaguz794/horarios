@@ -53,24 +53,31 @@ class ShiftTemplateAdmin(admin.ModelAdmin):
     )
     list_filter = ("counts_as_worked_time", "is_active")
     search_fields = ("label",)
-    fields = ("label", "start_time", "end_time", "counts_as_worked_time", "is_active")
 
     class ShiftTemplateAdminForm(forms.ModelForm):
         label = forms.CharField(
             required=False,
-            help_text="Si defines hora inicial y final, el nombre del turno se genera automaticamente.",
+            help_text="Solo se usa para novedades sin horario.",
+        )
+        start_time = forms.TimeField(
+            required=False,
+            help_text="Define la hora inicial. El sistema arma el nombre, duracion y orden automaticamente.",
+        )
+        end_time = forms.TimeField(
+            required=False,
+            help_text="Define la hora final. El recargo nocturno se calcula automaticamente.",
         )
 
         class Meta:
             model = ShiftTemplate
-            fields = ("label", "start_time", "end_time", "counts_as_worked_time", "is_active")
+            fields = ("label", "start_time", "end_time", "is_active")
 
         def clean(self):
             cleaned_data = super().clean()
             start_time = cleaned_data.get("start_time")
             end_time = cleaned_data.get("end_time")
-            counts_as_worked_time = bool(cleaned_data.get("counts_as_worked_time"))
-            label = (cleaned_data.get("label") or "").strip()
+            counts_as_worked_time = bool(getattr(self.instance, "counts_as_worked_time", False))
+            label = (cleaned_data.get("label") or getattr(self.instance, "label", "") or "").strip()
 
             if bool(start_time) != bool(end_time):
                 message = "Debes definir hora inicial y hora final para guardar el turno."
@@ -84,17 +91,27 @@ class ShiftTemplateAdmin(admin.ModelAdmin):
 
             if start_time and end_time:
                 cleaned_data["label"] = f"{start_time:%H:%M}-{end_time:%H:%M}"
-                cleaned_data["counts_as_worked_time"] = True
             elif counts_as_worked_time:
                 message = "Los turnos laborados deben tener hora inicial y hora final."
                 self.add_error("start_time", message)
                 self.add_error("end_time", message)
             elif not label:
-                self.add_error("label", "Las novedades sin horario necesitan un nombre.")
+                if "label" in self.fields:
+                    self.add_error("label", "Las novedades sin horario necesitan un nombre.")
+                else:
+                    message = "Debes definir hora inicial y hora final para guardar el turno."
+                    self.add_error("start_time", message)
+                    self.add_error("end_time", message)
 
             return cleaned_data
 
     form = ShiftTemplateAdminForm
+
+    def get_fields(self, request, obj=None):
+        is_novelty = bool(obj and not obj.counts_as_worked_time and not obj.start_time and not obj.end_time)
+        if is_novelty:
+            return ("label", "is_active")
+        return ("start_time", "end_time", "is_active")
 
 
 class OrderedSitesChoicesMixin:

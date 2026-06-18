@@ -154,6 +154,10 @@ class ShiftTemplate(TimeStampedModel):
             )
             self.display_order = max_order + 1
 
+        if not self.code:
+            prefix = "T" if self.start_time and self.end_time else "N"
+            self.code = f"{prefix}{self.display_order:03d}"
+
         super().save(*args, **kwargs)
 
     @property
