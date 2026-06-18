@@ -5,6 +5,7 @@ from django.conf import settings
 from django.db import models
 
 from core.models import Site, SystemConfiguration, TimeStampedModel
+from schedules.calendar_utils import get_special_day_label
 
 
 class WeeklySchedule(TimeStampedModel):
@@ -70,6 +71,8 @@ class WeeklySchedule(TimeStampedModel):
                     "index": index,
                     "label": SystemConfiguration.day_name(weekday),
                     "date": day_date.strftime("%d/%m/%Y"),
+                    "iso_date": day_date.isoformat(),
+                    "special_label": get_special_day_label(day_date),
                     "shift_1_name": f"day_{index}_shift_1",
                     "shift_2_name": f"day_{index}_shift_2",
                     "compensation_mode_name": f"day_{index}_compensation_mode",
@@ -85,6 +88,7 @@ class ScheduleLine(TimeStampedModel):
         NONE = "", "Sin pago"
         PAY_DAY = "pay_day", "Pago dia"
         PAY_HOURS = "pay_hours", "Pago horas"
+        PAY_MONEY = "pay_money", "Pago dinero"
 
     schedule = models.ForeignKey(WeeklySchedule, on_delete=models.CASCADE, related_name="lines")
     employee_document_type = models.CharField(max_length=20, blank=True)
@@ -136,12 +140,19 @@ class ScheduleLine(TimeStampedModel):
     total_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     overtime_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     night_bonus_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    special_days_generated = models.PositiveSmallIntegerField(default=0)
+    manual_day_adjustment = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    manual_hour_adjustment = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     pending_dates_note = models.TextField(blank=True)
     pending_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     pending_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     payment_days_used = models.PositiveSmallIntegerField(default=0)
     payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    money_payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     pending_hours_variance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    accrued_day_balance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    accrued_hour_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
+    accrued_total_hours_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
     validation_summary = models.TextField(blank=True)
     warnings_count = models.PositiveSmallIntegerField(default=0)
 
@@ -158,3 +169,74 @@ class ScheduleLine(TimeStampedModel):
     @property
     def pending_dates(self) -> list[str]:
         return [item.strip() for item in (self.pending_dates_note or "").split(",") if item.strip()]
+
+
+class ScheduleBalanceMovement(TimeStampedModel):
+    class MovementType(models.TextChoices):
+        OVERTIME = "overtime", "Hora extra generada"
+        SPECIAL_DAY = "special_day", "Domingo o festivo laborado"
+        MANUAL_DAY = "manual_day", "Ajuste manual de dias"
+        MANUAL_HOUR = "manual_hour", "Ajuste manual de horas"
+        PAY_DAY = "pay_day", "Pago con descanso"
+        PAY_HOURS = "pay_hours", "Pago con horas"
+        PAY_MONEY = "pay_money", "Pago en dinero"
+
+    schedule = models.ForeignKey(
+        WeeklySchedule,
+        on_delete=models.CASCADE,
+        related_name="balance_movements",
+    )
+    line = models.ForeignKey(
+        ScheduleLine,
+        on_delete=models.CASCADE,
+        related_name="balance_movements",
+    )
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.PROTECT,
+        related_name="balance_movements",
+    )
+    employee_identifier = models.CharField(max_length=30)
+    employee_name = models.CharField(max_length=180)
+    job_role_name = models.CharField(max_length=140, blank=True)
+    movement_date = models.DateField()
+    movement_type = models.CharField(max_length=30, choices=MovementType.choices)
+    quantity_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    quantity_hours = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
+    equivalent_hours = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
+    description = models.CharField(max_length=220, blank=True)
+
+    class Meta:
+        ordering = ["movement_date", "employee_identifier", "pk"]
+        db_table = "movimientos_saldo_horario"
+        verbose_name = "Movimiento de saldo"
+        verbose_name_plural = "Movimientos de saldo"
+
+    def __str__(self) -> str:
+        return f"{self.employee_identifier} - {self.get_movement_type_display()} - {self.movement_date:%Y-%m-%d}"
+
+
+class ScheduleSettlementDocument(TimeStampedModel):
+    schedule = models.OneToOneField(
+        WeeklySchedule,
+        on_delete=models.CASCADE,
+        related_name="settlement_document",
+    )
+    file_name = models.CharField(max_length=180)
+    pdf_content = models.BinaryField()
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="generated_settlement_documents",
+    )
+
+    class Meta:
+        ordering = ["-schedule__week_start_date", "schedule__site__code"]
+        db_table = "paz_y_salvo_semanal"
+        verbose_name = "Paz y salvo semanal"
+        verbose_name_plural = "Paz y salvo semanales"
+
+    def __str__(self) -> str:
+        return f"{self.schedule.site.name} - {self.schedule.week_start_date:%Y-%m-%d}"

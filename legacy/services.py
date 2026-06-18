@@ -34,6 +34,12 @@ class OperationalStaffingRecord:
     role_name: str
 
 
+@dataclass(slots=True)
+class LegacyThirdPartyRecord:
+    employee_id: str
+    employee_name: str
+
+
 def compose_employee_name(
     names: str,
     surname_1: str,
@@ -206,4 +212,36 @@ def fetch_active_staff_for_site(
             (item.employee_name or "").casefold(),
             (item.employee_id or "").casefold(),
         ),
+    )
+
+
+def lookup_third_party_by_identifier(employee_identifier: str) -> LegacyThirdPartyRecord | None:
+    cleaned_identifier = (employee_identifier or "").strip()
+    if not cleaned_identifier:
+        return None
+
+    lookup_query = """
+        SELECT
+            TRIM(COALESCE(nombres, '')) AS nombres,
+            TRIM(COALESCE(apellido1, '')) AS apellido1,
+            TRIM(COALESCE(apellido2, '')) AS apellido2
+        FROM terceros
+        WHERE TRIM(codigo) = %s
+        LIMIT 1
+    """
+    with connections["legacy"].cursor() as cursor:
+        cursor.execute(lookup_query, [cleaned_identifier])
+        row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    names, surname_1, surname_2 = row
+    employee_name = compose_employee_name(names, surname_1, surname_2)
+    if not employee_name:
+        return None
+
+    return LegacyThirdPartyRecord(
+        employee_id=cleaned_identifier,
+        employee_name=employee_name,
     )

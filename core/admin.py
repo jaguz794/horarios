@@ -1,6 +1,9 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django import forms
+from datetime import datetime, time
+from decimal import Decimal
 
 from core.models import Department, JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
 
@@ -51,6 +54,29 @@ class ShiftTemplateAdmin(admin.ModelAdmin):
     )
     list_filter = ("counts_as_worked_time", "is_active")
     search_fields = ("label", "code")
+
+    class ShiftTemplateAdminForm(forms.ModelForm):
+        class Meta:
+            model = ShiftTemplate
+            fields = "__all__"
+
+        def clean(self):
+            cleaned_data = super().clean()
+            start_time = cleaned_data.get("start_time")
+            end_time = cleaned_data.get("end_time")
+            duration_hours = cleaned_data.get("duration_hours")
+
+            if start_time and end_time and end_time == time(21, 30) and end_time > start_time:
+                cleaned_data["end_time"] = time(21, 0)
+                if duration_hours not in (None, ""):
+                    start_value = datetime.combine(datetime.today().date(), start_time)
+                    end_value = datetime.combine(datetime.today().date(), cleaned_data["end_time"])
+                    cleaned_data["duration_hours"] = Decimal(str((end_value - start_value).total_seconds() / 3600)).quantize(
+                        Decimal("0.01")
+                    )
+            return cleaned_data
+
+    form = ShiftTemplateAdminForm
 
 
 class OrderedSitesChoicesMixin:

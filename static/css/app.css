@@ -242,6 +242,20 @@ img {
   flex-wrap: wrap;
 }
 
+.manual-add-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.reports-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .header-actions form,
 .actions-cell form {
   margin: 0;
@@ -255,7 +269,7 @@ img {
 }
 
 .stats-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   margin-bottom: 24px;
 }
 
@@ -491,6 +505,10 @@ img {
   gap: 8px;
 }
 
+.field-group--hidden {
+  display: none;
+}
+
 .field-group span {
   font-weight: 700;
 }
@@ -568,6 +586,10 @@ textarea:focus {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
+.filter-form {
+  margin-bottom: 18px;
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid rgba(84, 112, 90, 0.14);
@@ -617,6 +639,17 @@ textarea:focus {
   z-index: 2;
   background: linear-gradient(180deg, #f6f7ba 0%, #ecf5c8 100%);
   box-shadow: inset 0 -1px 0 #d9e6b6;
+}
+
+.special-day-label {
+  display: inline-flex;
+  margin-top: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(8, 175, 82, 0.10);
+  color: var(--brand-green-dark);
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
 .turn-cell {
@@ -740,6 +773,10 @@ textarea:focus {
 .metric-cell {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.metric-cell--negative {
+  color: #a43720;
 }
 
 .schedule-table td.is-over-limit {

@@ -3,7 +3,7 @@
 
 {% block title %}Editar Horario | Portal de Horarios{% endblock %}
 {% block page_title %}{{ schedule.site.name }}{% endblock %}
-{% block page_subtitle %}Semana del {{ schedule.week_start_date }} al {{ schedule.week_end_date }}. Aqui se programan turnos, extras y pendientes por trabajador.{% endblock %}
+{% block page_subtitle %}Semana del {{ schedule.week_start_date }} al {{ schedule.week_end_date }}. Aqui se programan turnos, extras y acumulados por trabajador.{% endblock %}
 
 {% block content %}
 <section class="panel">
@@ -40,17 +40,20 @@
         <div class="panel-subsection-header">
           <div>
             <h3>Agregar persona manualmente</h3>
-            <p>Usa esta opcion cuando el trabajador no aparezca en la carga automatica de la sede.</p>
+            <p>Primero consulta el tercero por numero de documento. Si no existe, al segundo intento se habilita el ingreso manual del nombre.</p>
           </div>
-          <button type="submit" class="manual-add-submit-button" name="manual_add_submit" value="1">Agregar persona</button>
+          <div class="manual-add-actions">
+            <button type="submit" class="ghost-button" name="manual_lookup_submit" value="1">Consultar persona</button>
+            <button type="submit" class="manual-add-submit-button" name="manual_add_submit" value="1">Agregar persona</button>
+          </div>
         </div>
         {% if manual_add_form.non_field_errors %}
         <div class="row-errors">{{ manual_add_form.non_field_errors }}</div>
         {% endif %}
         <div class="field-grid manual-add-grid">
           {% for field in manual_add_form %}
-          <label class="field-group">
-            <span>{{ field.label }}</span>
+          <label class="field-group {% if field.is_hidden %}field-group--hidden{% endif %}">
+            {% if not field.is_hidden %}<span>{{ field.label }}</span>{% endif %}
             {{ field }}
             {{ field.errors }}
           </label>
@@ -82,6 +85,7 @@
         data-default-daily-max="{{ config.default_daily_max_hours }}"
         data-show-night-hours="{% if show_night_hours %}true{% else %}false{% endif %}"
         data-show-detailed-alerts="{% if show_detailed_alerts %}true{% else %}false{% endif %}"
+        data-show-admin-balance-controls="{% if show_admin_balance_controls %}true{% else %}false{% endif %}"
         data-schedule-closed="{% if schedule_closed %}true{% else %}false{% endif %}"
       >
         <thead>
@@ -94,6 +98,9 @@
             <th>
               <div>{{ column.label }}</div>
               <small>{{ column.date }}</small>
+              {% if column.special_label %}
+              <small class="special-day-label">{{ column.special_label }}</small>
+              {% endif %}
             </th>
             {% endfor %}
             <th>Total</th>
@@ -101,24 +108,42 @@
             {% if show_night_hours %}
             <th>Rec. noct.</th>
             {% endif %}
-            <th>Fechas pendientes</th>
-            <th>Dias pend.</th>
-            <th>Horas pend.</th>
             <th>
               <span
                 class="help-label"
-                title="Saldo acumulado en horas. Suma los dias pendientes, las horas pendientes y las extras calculadas; resta los pagos aplicados en esta semana. Si da 0, queda conciliado. Si da positivo, aun queda saldo por pagar. Si da negativo, se pago mas de lo acumulado."
+                title="Dias acumulados para compensar al trabajador. Se generan automaticamente cuando labora domingos o festivos y tambien con los ajustes manuales que haga administracion."
               >
-                Delta
+                Dias acum.
               </span>
             </th>
-            <th class="{% if show_detailed_alerts %}alerts-column alerts-column--detailed{% else %}alerts-column{% endif %}">
+            <th>
               <span
                 class="help-label"
-                title="{% if show_detailed_alerts %}Avisos del sistema sobre esa fila. Por ejemplo, si un dia supera el maximo permitido, si el total semanal supera la meta, si las fechas pendientes no coinciden con los dias pendientes o si se intenta pagar sin saldo previo disponible.{% else %}Resumen rapido de los puntos principales que debes revisar en esa fila.{% endif %}"
+                title="Horas acumuladas por trabajador. Incluye extras semanales, ajustes manuales y descuentos por pago con horas o pago en dinero."
               >
-                Alertas
+                Horas acum.
               </span>
+            </th>
+            {% if show_admin_balance_controls %}
+            <th>
+              <span
+                class="help-label"
+                title="Ajuste manual firmado. Usa valores positivos para sumar saldo al trabajador y negativos para descontarlo a favor de la empresa."
+              >
+                Ajuste dias
+              </span>
+            </th>
+            <th>
+              <span
+                class="help-label"
+                title="Ajuste manual firmado. Usa valores positivos para sumar horas y negativos para descontarlas."
+              >
+                Ajuste horas
+              </span>
+            </th>
+            {% endif %}
+            <th class="{% if show_detailed_alerts %}alerts-column alerts-column--detailed{% else %}alerts-column{% endif %}">
+              Alertas
             </th>
           </tr>
         </thead>
@@ -159,7 +184,7 @@
             </td>
             {% for column in day_columns %}
             {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name %}
-            <td data-day-index="{{ column.index }}">
+            <td data-day-index="{{ column.index }}" data-special-day="{{ column.special_label }}">
               <div class="turn-cell">
                 {{ shift_1 }}
                 {{ shift_2 }}
@@ -187,25 +212,22 @@
             {% if show_night_hours %}
             <td class="metric-cell" data-night-hours>{{ line_form.instance.night_bonus_hours|hours_int }}</td>
             {% endif %}
-            <td>
-              <div class="pending-cell">
-                {{ line_form.pending_dates_note }}
-                {{ line_form.pending_dates_note.errors }}
-              </div>
-            </td>
+            <td class="metric-cell" data-day-balance>{{ line_form.instance.accrued_day_balance|hours_int }}</td>
+            <td class="metric-cell" data-hour-balance>{{ line_form.instance.accrued_hour_balance|hours_int }}</td>
+            {% if show_admin_balance_controls %}
             <td>
               <div class="pending-cell pending-cell--compact pending-cell--days">
-                {{ line_form.pending_days }}
-                {{ line_form.pending_days.errors }}
+                {{ line_form.manual_day_adjustment }}
+                {{ line_form.manual_day_adjustment.errors }}
               </div>
             </td>
             <td>
               <div class="pending-cell pending-cell--compact pending-cell--hours">
-                {{ line_form.pending_hours }}
-                {{ line_form.pending_hours.errors }}
+                {{ line_form.manual_hour_adjustment }}
+                {{ line_form.manual_hour_adjustment.errors }}
               </div>
             </td>
-            <td class="delta-cell" data-pending-variance>{{ line_form.instance.pending_hours_variance|hours_int }}</td>
+            {% endif %}
             <td class="{% if show_detailed_alerts %}alerts-cell alerts-cell--detailed{% else %}alerts-cell{% endif %}">
               <small
                 class="balance-note"
@@ -215,7 +237,7 @@
                 data-prior-day-hours="{{ line_form.balance_snapshot.prior_day_equivalent_hours }}"
                 data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
               >
-                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) ({{ line_form.balance_snapshot.prior_day_equivalent_hours|hours_int }} h) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h.
+                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h.
               </small>
               <small class="live-summary" data-live-summary></small>
               {% if line_form.non_field_errors %}
@@ -236,7 +258,7 @@
           </tr>
           {% empty %}
           <tr>
-            <td colspan="{% if show_night_hours %}19{% else %}18{% endif %}">Esta sede no tiene personal cargado todavia.</td>
+            <td colspan="{% if show_night_hours %}{% if show_admin_balance_controls %}19{% else %}17{% endif %}{% else %}{% if show_admin_balance_controls %}18{% else %}16{% endif %}{% endif %}">Esta sede no tiene personal cargado todavia.</td>
           </tr>
           {% endfor %}
         </tbody>

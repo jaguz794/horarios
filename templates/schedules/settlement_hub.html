@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+
+{% block title %}Paz y Salvo | Portal de Horarios{% endblock %}
+{% block page_title %}Paz y Salvo{% endblock %}
+{% block page_subtitle %}Genera o descarga el paz y salvo semanal de los horarios publicados.{% endblock %}
+
+{% block content %}
+<section class="panel slim-panel">
+  <div class="panel-header">
+    <div>
+      <h2>Generar paz y salvo</h2>
+      <p>Selecciona la sede y la semana publicada que deseas descargar en PDF.</p>
+    </div>
+  </div>
+  <form method="post" class="panel-subsection">
+    {% csrf_token %}
+    <div class="field-grid">
+      {% for field in form %}
+      <label class="field-group">
+        <span>{{ field.label }}</span>
+        {{ field }}
+        {% if field.help_text %}
+        <small>{{ field.help_text }}</small>
+        {% endif %}
+        {{ field.errors }}
+      </label>
+      {% endfor %}
+    </div>
+    <div class="reports-actions">
+      <button type="submit" class="primary-button">Generar PDF</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Ultimos horarios publicados</h2>
+      <p>Acceso rapido a los documentos de las semanas ya cerradas.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Sede</th>
+          <th>Inicio</th>
+          <th>Fin</th>
+          <th>Documento</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for schedule in recent_published_schedules %}
+        <tr>
+          <td>{{ schedule.site.name }}</td>
+          <td>{{ schedule.week_start_date }}</td>
+          <td>{{ schedule.week_end_date }}</td>
+          <td>
+            <a href="{% url 'schedules:settlement-download' schedule.pk %}" class="text-link">
+              Descargar paz y salvo
+            </a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="4">No hay horarios publicados todavia.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

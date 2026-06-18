@@ -10,7 +10,7 @@ from django.db import transaction
 
 from core.models import Department, JobRole, ShiftTemplate, Site, SystemConfiguration
 from schedules.models import ScheduleLine, WeeklySchedule
-from schedules.services import recalculate_schedule_line
+from schedules.services import save_schedule_line_with_balances
 
 User = get_user_model()
 ZERO = Decimal("0.00")
@@ -377,8 +377,7 @@ class Command(BaseCommand):
                     for field_name, value in payload.items():
                         setattr(line, field_name, value)
 
-                    recalculate_schedule_line(line)
-                    line.save()
+                    save_schedule_line_with_balances(line)
 
                 if replace:
                     deleted_count, _ = (

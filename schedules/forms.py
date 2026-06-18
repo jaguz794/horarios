@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -9,12 +11,12 @@ from django.utils import timezone
 
 from core.access import get_accessible_sites_queryset
 from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration
+from legacy.services import lookup_third_party_by_identifier
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
+    get_rest_shift_label,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
-    get_rest_shift_label,
-    recalculate_schedule_line,
     resolve_shift_metrics,
 )
 
@@ -48,21 +50,6 @@ def build_shift_choices(second_slot: bool = False) -> list[tuple[str, str] | tup
     return choices
 
 
-def parse_multiple_dates(serialized_value: str) -> list[date]:
-    if not serialized_value:
-        return []
-
-    values: list[date] = []
-    for raw_value in serialized_value.split(","):
-        cleaned = raw_value.strip()
-        if not cleaned:
-            continue
-        values.append(date.fromisoformat(cleaned))
-
-    unique_values = sorted(set(values))
-    return unique_values
-
-
 class DatePickerInput(forms.DateInput):
     input_type = "date"
 
@@ -91,28 +78,6 @@ class IntegerNumberInput(TrimmedNumberInput):
             return super().format_value(value)
 
 
-class MultiDateWidget(forms.Widget):
-    template_name = "widgets/multi_date_input.html"
-
-    def format_value(self, value):
-        if not value:
-            return []
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return [str(item) for item in value]
-
-    def get_context(self, name, value, attrs):
-        context = super().get_context(name, value, attrs)
-        normalized_values = self.format_value(value)
-        serialized_value = ",".join(normalized_values)
-        context["widget"]["value"] = serialized_value
-        context["widget"]["date_values"] = normalized_values
-        return context
-
-    def value_from_datadict(self, data, files, name):
-        return data.get(name, "")
-
-
 class StyledFormMixin:
     field_class = "input"
 
@@ -120,6 +85,26 @@ class StyledFormMixin:
         for field in self.fields.values():
             css_class = field.widget.attrs.get("class", "")
             field.widget.attrs["class"] = f"{css_class} {self.field_class}".strip()
+
+
+class ScheduleFilterForm(StyledFormMixin, forms.Form):
+    site = forms.ModelChoiceField(queryset=Site.objects.none(), required=False, label="Sede")
+    status = forms.ChoiceField(
+        required=False,
+        label="Estado",
+        choices=[("", "Todos")] + list(WeeklySchedule.Status.choices),
+    )
+    week_start_date = forms.DateField(
+        required=False,
+        label="Fecha inicio de semana",
+        widget=DatePickerInput(),
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["site"].queryset = get_accessible_sites_queryset(user, Site.objects.filter(is_active=True))
+        self.fields["site"].empty_label = "Todas"
+        self.apply_style()
 
 
 class ScheduleLoadForm(StyledFormMixin, forms.Form):
@@ -162,10 +147,12 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
         max_length=30,
         widget=forms.TextInput(attrs={"placeholder": "Ej. 1000123456"}),
     )
+    lookup_attempts = forms.IntegerField(widget=forms.HiddenInput(), required=False, initial=0)
     employee_name = forms.CharField(
         label="Nombre completo",
         max_length=180,
-        widget=forms.TextInput(attrs={"placeholder": "Nombre del trabajador"}),
+        required=False,
+        widget=forms.TextInput(attrs={"placeholder": "Se llenara automaticamente desde terceros"}),
     )
     job_role = forms.ModelChoiceField(
         queryset=JobRole.objects.none(),
@@ -173,11 +160,28 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
         empty_label="Selecciona un cargo",
     )
 
-    def __init__(self, *args, schedule=None, readonly: bool = False, **kwargs):
+    def __init__(
+        self,
+        *args,
+        schedule=None,
+        readonly: bool = False,
+        manual_name_enabled: bool = False,
+        lookup_found: bool = False,
+        **kwargs,
+    ):
         self.schedule = schedule
+        self.manual_name_enabled = manual_name_enabled
+        self.lookup_found = lookup_found
+        self.lookup_result = None
         super().__init__(*args, **kwargs)
         self.fields["job_role"].queryset = JobRole.objects.filter(is_active=True).order_by("name")
         self.apply_style()
+
+        if not manual_name_enabled:
+            self.fields["employee_name"].widget.attrs["readonly"] = True
+            if lookup_found:
+                self.fields["employee_name"].widget.attrs["placeholder"] = "Nombre encontrado en el sistema"
+
         if readonly:
             for field in self.fields.values():
                 field.disabled = True
@@ -195,11 +199,30 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
             raise forms.ValidationError("Ese numero de documento ya existe en este horario.")
         return value
 
-    def clean_employee_name(self):
-        value = " ".join((self.cleaned_data.get("employee_name") or "").split())
-        if len(value) < 3:
-            raise forms.ValidationError("Ingresa un nombre valido para el trabajador.")
-        return value
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.errors:
+            return cleaned_data
+
+        employee_identifier = cleaned_data.get("employee_identifier", "")
+        lookup_attempts = int(cleaned_data.get("lookup_attempts") or 0)
+        lookup_result = lookup_third_party_by_identifier(employee_identifier)
+        self.lookup_result = lookup_result
+
+        if lookup_result:
+            cleaned_data["employee_name"] = lookup_result.employee_name
+            return cleaned_data
+
+        if lookup_attempts < 2:
+            raise forms.ValidationError(
+                "La persona no esta creada en el sistema. Vuelve a consultar para habilitar el cargue manual."
+            )
+
+        employee_name = " ".join((cleaned_data.get("employee_name") or "").split())
+        if len(employee_name) < 3:
+            self.add_error("employee_name", "Ingresa un nombre valido para el trabajador.")
+        cleaned_data["employee_name"] = employee_name
+        return cleaned_data
 
     def save(self) -> ScheduleLine:
         config = SystemConfiguration.load()
@@ -216,8 +239,6 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
             weekly_target_hours=job_role.weekly_target_hours or config.default_weekly_hours,
             daily_max_hours=job_role.daily_max_hours or config.default_daily_max_hours,
         )
-        recalculate_schedule_line(line)
-        line.save()
         return line
 
 
@@ -226,14 +247,14 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
     SHIFT_2_FIELDS = [f"day_{index}_shift_2" for index in range(7)]
     COMPENSATION_MODE_FIELDS = [f"day_{index}_compensation_mode" for index in range(7)]
     COMPENSATION_HOURS_FIELDS = [f"day_{index}_compensation_hours" for index in range(7)]
-    pending_days = forms.IntegerField(
-        min_value=0,
-        widget=IntegerNumberInput(attrs={"step": "1", "min": "0", "class": "input input--numeric input--days"}),
+    manual_day_adjustment = forms.IntegerField(
+        required=False,
+        widget=IntegerNumberInput(attrs={"step": "1", "class": "input input--numeric input--days"}),
     )
-    pending_hours = forms.DecimalField(
-        min_value=0,
+    manual_hour_adjustment = forms.DecimalField(
+        required=False,
         decimal_places=2,
-        widget=TrimmedNumberInput(attrs={"step": "0.50", "min": "0", "class": "input input--numeric input--hours"}),
+        widget=TrimmedNumberInput(attrs={"step": "0.50", "class": "input input--numeric input--hours"}),
     )
 
     class Meta:
@@ -267,13 +288,9 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             "day_6_shift_2",
             "day_6_compensation_mode",
             "day_6_compensation_hours",
-            "pending_dates_note",
-            "pending_days",
-            "pending_hours",
+            "manual_day_adjustment",
+            "manual_hour_adjustment",
         ]
-        widgets = {
-            "pending_dates_note": MultiDateWidget(),
-        }
 
     def __init__(
         self,
@@ -282,14 +299,27 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         shift_choices=None,
         secondary_shift_choices=None,
         readonly: bool = False,
+        allow_money_payment: bool = False,
+        show_admin_fields: bool = False,
         **kwargs,
     ):
         self.schedule = schedule
+        self.allow_money_payment = allow_money_payment
+        self.show_admin_fields = show_admin_fields
         super().__init__(*args, **kwargs)
         if self.schedule is not None and getattr(self.instance, "schedule_id", None) is None:
             self.instance.schedule = self.schedule
+
         shift_1_choices = shift_choices or build_shift_choices(second_slot=False)
         shift_2_choices = secondary_shift_choices or build_shift_choices(second_slot=True)
+        payment_choices = [
+            ScheduleLine.CompensationMode.NONE,
+            ScheduleLine.CompensationMode.PAY_DAY,
+            ScheduleLine.CompensationMode.PAY_HOURS,
+        ]
+        if self.allow_money_payment:
+            payment_choices.append(ScheduleLine.CompensationMode.PAY_MONEY)
+        payment_choices_render = [(value, label) for value, label in ScheduleLine.CompensationMode.choices if value in payment_choices]
 
         for field_name in self.SHIFT_1_FIELDS:
             self.fields[field_name].widget = forms.Select(
@@ -304,6 +334,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             )
 
         for field_name in self.COMPENSATION_MODE_FIELDS:
+            self.fields[field_name].choices = payment_choices_render
             self.fields[field_name].widget.attrs["class"] = "input input--compact input--payment-mode"
 
         for field_name in self.COMPENSATION_HOURS_FIELDS:
@@ -311,7 +342,6 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             self.fields[field_name].widget = TrimmedNumberInput(
                 attrs={
                     "step": "0.50",
-                    "min": "0",
                     "placeholder": "Horas",
                     "class": "input input--compact input--numeric input--pay-hours",
                 }
@@ -323,18 +353,16 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             balance_snapshot=self.balance_snapshot,
         )
         self.apply_style()
+
+        if not self.show_admin_fields:
+            self.fields["manual_day_adjustment"].widget = forms.HiddenInput()
+            self.fields["manual_day_adjustment"].disabled = True
+            self.fields["manual_hour_adjustment"].widget = forms.HiddenInput()
+            self.fields["manual_hour_adjustment"].disabled = True
+
         if readonly:
             for field in self.fields.values():
                 field.disabled = True
-
-    def clean_pending_dates_note(self):
-        raw_value = self.cleaned_data.get("pending_dates_note", "")
-        try:
-            parsed_dates = parse_multiple_dates(raw_value)
-        except ValueError as exc:
-            raise forms.ValidationError("Hay una fecha pendiente con formato invalido.") from exc
-
-        return ",".join(item.isoformat() for item in parsed_dates)
 
     def clean(self):
         cleaned_data = super().clean()
@@ -350,19 +378,14 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             shift.label: shift
             for shift in ShiftTemplate.objects.filter(label__in=shift_labels)
         }
-        pending_dates = parse_multiple_dates(cleaned_data.get("pending_dates_note", ""))
-        pending_days = cleaned_data.get("pending_days") or 0
         prior_day_balance = max(self.balance_snapshot["prior_day_balance"], Decimal("0.00"))
         prior_hour_balance = max(self.balance_snapshot["prior_hour_balance"], Decimal("0.00"))
         current_payment_days = 0
         current_payment_hours = Decimal("0.00")
+        current_money_payment_hours = Decimal("0.00")
         payment_day_fields: list[str] = []
         payment_hours_fields: list[str] = []
-
-        if len(pending_dates) != pending_days:
-            message = "La cantidad de fechas pendientes debe coincidir con dias pendientes."
-            self.add_error("pending_dates_note", message)
-            self.add_error("pending_days", message)
+        payment_money_fields: list[str] = []
 
         for index in range(7):
             shift_1_field = f"day_{index}_shift_1"
@@ -381,12 +404,17 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             elif compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
                 payment_hours_fields.append(compensation_hours_field)
                 if compensation_hours <= Decimal("0.00"):
-                    self.add_error(
-                        compensation_hours_field,
-                        "Pago horas requiere una cantidad mayor que cero.",
-                    )
+                    self.add_error(compensation_hours_field, "Pago horas requiere una cantidad mayor que cero.")
                 else:
                     current_payment_hours += compensation_hours
+            elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY:
+                if not self.allow_money_payment:
+                    self.add_error(compensation_mode_field, "Pago en dinero solo esta disponible para el perfil administrador.")
+                payment_money_fields.append(compensation_hours_field)
+                if compensation_hours <= Decimal("0.00"):
+                    self.add_error(compensation_hours_field, "Pago en dinero requiere una cantidad mayor que cero.")
+                else:
+                    current_money_payment_hours += compensation_hours
             else:
                 cleaned_data[compensation_hours_field] = Decimal("0.00")
 
@@ -463,13 +491,13 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                     )
 
         if Decimal(str(current_payment_days)) > prior_day_balance:
-            message = "No hay suficientes dias pendientes de horarios anteriores para aplicar pago dia."
+            message = "No hay suficientes dias acumulados de semanas anteriores para aplicar pago dia."
             for field_name in payment_day_fields:
                 self.add_error(field_name, message)
 
-        if current_payment_hours > prior_hour_balance:
-            message = "Las horas marcadas como pago superan el saldo previo disponible de horarios anteriores."
-            for field_name in payment_hours_fields:
+        if current_payment_hours + current_money_payment_hours > prior_hour_balance:
+            message = "Las horas descontadas superan el saldo previo disponible de semanas anteriores."
+            for field_name in payment_hours_fields + payment_money_fields:
                 self.add_error(field_name, message)
 
         return cleaned_data
@@ -482,3 +510,54 @@ ScheduleLineFormSet = inlineformset_factory(
     extra=0,
     can_delete=False,
 )
+
+
+class ReportRangeForm(StyledFormMixin, forms.Form):
+    site = forms.ModelChoiceField(queryset=Site.objects.none(), required=False, label="Sede")
+    date_from = forms.DateField(label="Desde", widget=DatePickerInput())
+    date_to = forms.DateField(label="Hasta", widget=DatePickerInput())
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["site"].queryset = get_accessible_sites_queryset(user, Site.objects.filter(is_active=True))
+        self.fields["site"].empty_label = "Todas"
+        self.apply_style()
+
+    def clean(self):
+        cleaned_data = super().clean()
+        date_from = cleaned_data.get("date_from")
+        date_to = cleaned_data.get("date_to")
+        if date_from and date_to and date_from > date_to:
+            self.add_error("date_to", "La fecha final debe ser mayor o igual a la fecha inicial.")
+        return cleaned_data
+
+
+class WeeklyBalanceReportForm(StyledFormMixin, forms.Form):
+    site = forms.ModelChoiceField(queryset=Site.objects.none(), required=False, label="Sede")
+    week_start_date = forms.DateField(
+        label="Semana",
+        widget=DatePickerInput(),
+        initial=current_week_start,
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["site"].queryset = get_accessible_sites_queryset(user, Site.objects.filter(is_active=True))
+        self.fields["site"].empty_label = "Todas"
+        self.apply_style()
+
+
+class ScheduleSettlementForm(StyledFormMixin, forms.Form):
+    site = forms.ModelChoiceField(queryset=Site.objects.none(), required=False, label="Sede")
+    week_start_date = forms.DateField(
+        label="Semana",
+        widget=DatePickerInput(),
+        initial=current_week_start,
+        help_text="Selecciona el primer dia de la semana del horario publicado.",
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["site"].queryset = get_accessible_sites_queryset(user, Site.objects.filter(is_active=True))
+        self.fields["site"].empty_label = "Todas"
+        self.apply_style()
