@@ -24,6 +24,8 @@
         <a href="{% url 'dashboard' %}" class="nav-link">Inicio</a>
         <a href="{% url 'site-list' %}" class="nav-link">Sedes</a>
         <a href="{% url 'schedules:list' %}" class="nav-link">Horarios</a>
+        <a href="{% url 'schedules:settlement-hub' %}" class="nav-link">Paz y salvo</a>
+        <a href="{% url 'reports' %}" class="nav-link">Informes</a>
         {% if request.user.is_staff %}
         <a href="/admin/" class="nav-link">Administracion</a>
         {% endif %}

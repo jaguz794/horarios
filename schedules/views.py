@@ -2,6 +2,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.views import View
@@ -10,14 +11,24 @@ from django.views.generic import FormView, ListView, TemplateView
 from core.access import get_accessible_schedules_queryset, user_can_delete_schedules, user_can_manage_all_sites
 from core.models import SystemConfiguration
 from schedules.forms import (
+    DOCUMENT_NUMBER_PATTERN,
     ScheduleLineFormSet,
+    ScheduleFilterForm,
     ScheduleLineManualAddForm,
     ScheduleLoadForm,
+    ScheduleSettlementForm,
     WeeklyScheduleForm,
     build_shift_choices,
 )
 from schedules.models import ScheduleLine, WeeklySchedule
-from schedules.services import build_shift_metrics_catalog, recalculate_schedule_line, sync_schedule_from_legacy
+from schedules.services import (
+    build_shift_metrics_catalog,
+    rebuild_balances_for_employees_from_week,
+    save_schedule_line_with_balances,
+    sync_schedule_from_legacy,
+)
+from schedules.settlement_pdf import generate_and_store_schedule_settlement
+from legacy.services import lookup_third_party_by_identifier
 
 
 class ScheduleListView(LoginRequiredMixin, ListView):
@@ -25,13 +36,30 @@ class ScheduleListView(LoginRequiredMixin, ListView):
     template_name = "schedules/schedule_list.html"
     context_object_name = "schedules"
 
+    def get_filter_form(self):
+        return ScheduleFilterForm(self.request.GET or None, user=self.request.user)
+
     def get_queryset(self):
         queryset = WeeklySchedule.objects.select_related("site").order_by("-week_start_date", "site__code")
-        return get_accessible_schedules_queryset(self.request.user, queryset)
+        queryset = get_accessible_schedules_queryset(self.request.user, queryset)
+        self.filter_form = self.get_filter_form()
+        if self.filter_form.is_valid():
+            site = self.filter_form.cleaned_data.get("site")
+            status = self.filter_form.cleaned_data.get("status")
+            week_start_date = self.filter_form.cleaned_data.get("week_start_date")
+            if site:
+                queryset = queryset.filter(site=site)
+            if status:
+                queryset = queryset.filter(status=status)
+            if week_start_date:
+                queryset = queryset.filter(week_start_date=week_start_date)
+        return queryset
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["can_delete_schedules"] = user_can_delete_schedules(self.request.user)
+        context["filter_form"] = getattr(self, "filter_form", self.get_filter_form())
+        context["show_filters"] = user_can_manage_all_sites(self.request.user)
         return context
 
 
@@ -86,20 +114,32 @@ class ScheduleLoadView(LoginRequiredMixin, FormView):
 class ScheduleEditView(LoginRequiredMixin, TemplateView):
     template_name = "schedules/schedule_edit.html"
 
-    def get_manual_add_form(self, schedule, data=None, readonly: bool = False):
+    def get_manual_add_form(
+        self,
+        schedule,
+        data=None,
+        readonly: bool = False,
+        manual_name_enabled: bool = False,
+        lookup_found: bool = False,
+    ):
         return ScheduleLineManualAddForm(
             data=data,
             schedule=schedule,
             prefix="manual",
             readonly=readonly,
+            manual_name_enabled=manual_name_enabled,
+            lookup_found=lookup_found,
         )
 
     def get_line_form_kwargs(self, schedule, readonly: bool = False):
+        is_admin_scope = user_can_manage_all_sites(self.request.user)
         return {
             "schedule": schedule,
             "shift_choices": build_shift_choices(second_slot=False),
             "secondary_shift_choices": build_shift_choices(second_slot=True),
             "readonly": readonly,
+            "allow_money_payment": is_admin_scope,
+            "show_admin_fields": is_admin_scope,
         }
 
     def get_schedule(self):
@@ -120,16 +160,78 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
         if remove_line_id:
             line = get_object_or_404(ScheduleLine.objects.filter(schedule=schedule), pk=remove_line_id)
             employee_name = line.employee_name
+            employee_identifier = line.employee_identifier
             line.delete()
+            rebuild_balances_for_employees_from_week(schedule.week_start_date, [employee_identifier])
             messages.success(
                 request,
                 f"Trabajador retirado del horario: {employee_name}.",
             )
             return redirect("schedules:edit", pk=schedule.pk)
+        if "manual_lookup_submit" in request.POST:
+            attempts = int(request.POST.get("manual-lookup_attempts", "0") or "0")
+            next_attempts = attempts + 1
+            identifier = (request.POST.get("manual-employee_identifier", "") or "").strip().upper()
+            data = request.POST.copy()
+            data["manual-lookup_attempts"] = str(next_attempts)
+            manual_name_enabled = False
+            lookup_found = False
+
+            if not DOCUMENT_NUMBER_PATTERN.fullmatch(identifier):
+                messages.error(
+                    request,
+                    "Ingresa un numero de documento valido para consultar el tercero.",
+                )
+            elif ScheduleLine.objects.filter(schedule=schedule, employee_identifier=identifier).exists():
+                messages.error(request, "Ese numero de documento ya existe en este horario.")
+            else:
+                lookup_result = lookup_third_party_by_identifier(identifier)
+                if lookup_result:
+                    data["manual-employee_name"] = lookup_result.employee_name
+                    lookup_found = True
+                    messages.success(
+                        request,
+                        f"Persona encontrada en terceros: {lookup_result.employee_name}. Ahora selecciona el cargo y agrega la persona.",
+                    )
+                else:
+                    manual_name_enabled = next_attempts >= 2
+                    if manual_name_enabled:
+                        messages.warning(
+                            request,
+                            "La persona no esta creada en el sistema. Ya puedes ingresar manualmente el nombre y el cargo.",
+                        )
+                    else:
+                        messages.warning(
+                            request,
+                            "La persona no esta creada en el sistema. Consulta una vez mas para habilitar el cargue manual.",
+                        )
+
+            manual_add_form = self.get_manual_add_form(
+                schedule,
+                data=data,
+                readonly=False,
+                manual_name_enabled=manual_name_enabled,
+                lookup_found=lookup_found,
+            )
+            return self.render_to_response(
+                self.build_context(
+                    schedule,
+                    manual_add_form=manual_add_form,
+                )
+            )
         if "manual_add_submit" in request.POST:
-            manual_add_form = self.get_manual_add_form(schedule, data=request.POST, readonly=False)
+            lookup_attempts = int(request.POST.get("manual-lookup_attempts", "0") or "0")
+            manual_add_form = self.get_manual_add_form(
+                schedule,
+                data=request.POST,
+                readonly=False,
+                manual_name_enabled=lookup_attempts >= 2,
+                lookup_found=bool(request.POST.get("manual-employee_name", "").strip()),
+            )
             if manual_add_form.is_valid():
                 line = manual_add_form.save()
+                save_schedule_line_with_balances(line)
+                rebuild_balances_for_employees_from_week(schedule.week_start_date, [line.employee_identifier])
                 messages.success(
                     request,
                     f"Trabajador agregado manualmente al horario: {line.employee_name}.",
@@ -157,9 +259,12 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
                 updated_schedule.updated_by = request.user
                 updated_schedule.save()
                 line_formset.save()
-                for line in updated_schedule.lines.all():
-                    recalculate_schedule_line(line)
-                    line.save()
+                target_employee_ids = list(updated_schedule.lines.values_list("employee_identifier", flat=True))
+                if target_employee_ids:
+                    rebuild_balances_for_employees_from_week(updated_schedule.week_start_date, target_employee_ids)
+                updated_schedule.refresh_from_db()
+                if updated_schedule.status == WeeklySchedule.Status.PUBLISHED:
+                    generate_and_store_schedule_settlement(updated_schedule, generated_by=request.user)
 
             messages.success(request, "Horario actualizado correctamente.")
             return redirect("schedules:edit", pk=schedule.pk)
@@ -176,6 +281,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
     def build_context(self, schedule, schedule_form=None, line_formset=None, manual_add_form=None):
         config = SystemConfiguration.load()
         schedule_closed = schedule.is_closed
+        is_admin_scope = user_can_manage_all_sites(self.request.user)
         schedule_form = schedule_form or WeeklyScheduleForm(instance=schedule, readonly=schedule_closed)
         manual_add_form = manual_add_form or self.get_manual_add_form(schedule, readonly=schedule_closed)
         line_formset = line_formset or ScheduleLineFormSet(
@@ -191,8 +297,10 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             "config": config,
             "shift_metrics": build_shift_metrics_catalog(config=config),
             "can_delete_schedules": user_can_delete_schedules(self.request.user),
-            "show_night_hours": user_can_manage_all_sites(self.request.user),
-            "show_detailed_alerts": user_can_manage_all_sites(self.request.user),
+            "show_night_hours": is_admin_scope,
+            "show_detailed_alerts": is_admin_scope,
+            "show_admin_balance_controls": is_admin_scope,
+            "allow_money_payment": is_admin_scope,
             "manual_add_open": manual_add_form.is_bound,
             "schedule_closed": schedule_closed,
         }
@@ -228,3 +336,61 @@ class ScheduleDeleteView(LoginRequiredMixin, View):
             f"Horario eliminado: {site_name} - {week_start}. Se borraron {line_count} registros de personal.",
         )
         return redirect("schedules:list")
+
+
+class ScheduleSettlementHubView(LoginRequiredMixin, TemplateView):
+    template_name = "schedules/settlement_hub.html"
+
+    def get_form(self, data=None):
+        return ScheduleSettlementForm(data=data, user=self.request.user, prefix="settlement")
+
+    def get_published_queryset(self):
+        queryset = WeeklySchedule.objects.select_related("site").prefetch_related("settlement_document")
+        return get_accessible_schedules_queryset(self.request.user, queryset).filter(
+            status=WeeklySchedule.Status.PUBLISHED
+        ).order_by("-week_start_date", "site__code")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.setdefault("form", self.get_form())
+        context["recent_published_schedules"] = list(self.get_published_queryset()[:12])
+        context["is_admin_scope"] = user_can_manage_all_sites(self.request.user)
+        return context
+
+    def post(self, request, *args, **kwargs):
+        form = self.get_form(request.POST)
+        if form.is_valid():
+            site = form.cleaned_data.get("site")
+            week_start_date = form.cleaned_data["week_start_date"]
+            queryset = self.get_published_queryset().filter(week_start_date=week_start_date)
+            if site:
+                queryset = queryset.filter(site=site)
+
+            schedules = list(queryset[:2])
+            if not schedules:
+                messages.error(request, "No existe un horario publicado para esa sede y semana.")
+            elif len(schedules) > 1:
+                messages.error(request, "Selecciona la sede para identificar un unico paz y salvo.")
+            else:
+                schedule = schedules[0]
+                document = generate_and_store_schedule_settlement(schedule, generated_by=request.user)
+                response = HttpResponse(document.pdf_content, content_type="application/pdf")
+                response["Content-Disposition"] = f'attachment; filename="{document.file_name}"'
+                return response
+
+        return self.render_to_response(self.get_context_data(form=form))
+
+
+class ScheduleSettlementDownloadView(LoginRequiredMixin, View):
+    def get(self, request, *args, **kwargs):
+        queryset = WeeklySchedule.objects.select_related("site")
+        queryset = get_accessible_schedules_queryset(request.user, queryset)
+        schedule = get_object_or_404(queryset, pk=self.kwargs["pk"])
+        if schedule.status != WeeklySchedule.Status.PUBLISHED:
+            messages.error(request, "El paz y salvo solo esta disponible para horarios publicados.")
+            return redirect("schedules:edit", pk=schedule.pk)
+
+        document = generate_and_store_schedule_settlement(schedule, generated_by=request.user)
+        response = HttpResponse(document.pdf_content, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{document.file_name}"'
+        return response

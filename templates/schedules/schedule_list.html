@@ -13,6 +13,22 @@
     </div>
     <a href="{% url 'schedules:load' %}" class="primary-button">Cargar horario</a>
   </div>
+  {% if show_filters %}
+  <form method="get" class="panel-subsection filter-form">
+    <div class="field-grid">
+      {% for field in filter_form %}
+      <label class="field-group">
+        <span>{{ field.label }}</span>
+        {{ field }}
+      </label>
+      {% endfor %}
+    </div>
+    <div class="header-actions">
+      <button type="submit" class="ghost-button">Filtrar</button>
+      <a href="{% url 'schedules:list' %}" class="text-link">Limpiar filtros</a>
+    </div>
+  </form>
+  {% endif %}
   <div class="table-wrap">
     <table class="data-table">
       <thead>
@@ -35,6 +51,9 @@
             <a href="{% url 'schedules:edit' schedule.pk %}" class="text-link">
               {% if schedule.is_closed %}Ver{% else %}Editar{% endif %}
             </a>
+            {% if schedule.is_closed %}
+            <a href="{% url 'schedules:settlement-download' schedule.pk %}" class="text-link">Paz y salvo</a>
+            {% endif %}
             {% if can_delete_schedules %}
             <form method="post" action="{% url 'schedules:delete' schedule.pk %}" onsubmit="return confirm('Se eliminara este horario y todos sus registros. ¿Deseas continuar?');">
               {% csrf_token %}

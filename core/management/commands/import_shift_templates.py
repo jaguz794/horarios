@@ -54,6 +54,16 @@ def infer_range_from_label(label: str) -> tuple[time | None, time | None]:
     return start_time, end_time
 
 
+def clamp_end_time(start_time: time | None, end_time: time | None, duration_hours: Decimal) -> tuple[time | None, Decimal]:
+    if start_time and end_time == time(21, 30) and end_time > start_time:
+        adjusted_end_time = time(21, 0)
+        start_value = datetime.combine(datetime.today().date(), start_time)
+        end_value = datetime.combine(datetime.today().date(), adjusted_end_time)
+        adjusted_duration = Decimal(str((end_value - start_value).total_seconds() / 3600)).quantize(Decimal("0.01"))
+        return adjusted_end_time, adjusted_duration
+    return end_time, duration_hours
+
+
 class Command(BaseCommand):
     help = "Importa o actualiza los turnos desde un archivo Excel."
 
@@ -93,6 +103,7 @@ class Command(BaseCommand):
 
             duration_hours = time_to_decimal(total_hours)
             night_bonus_hours = time_to_decimal(night_bonus)
+            end_time, duration_hours = clamp_end_time(start_time, end_time, duration_hours)
             counts_as_worked_time = (
                 duration_hours > 0 and normalized_label.casefold() not in NON_WORKED_LABELS
             )
