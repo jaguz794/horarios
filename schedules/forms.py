@@ -17,6 +17,7 @@ from schedules.services import (
     get_rest_shift_label,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
+    resolve_compensation_usage,
     resolve_shift_metrics,
 )
 
@@ -380,12 +381,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         }
         prior_day_balance = max(self.balance_snapshot["prior_day_balance"], Decimal("0.00"))
         prior_hour_balance = max(self.balance_snapshot["prior_hour_balance"], Decimal("0.00"))
-        current_payment_days = 0
-        current_payment_hours = Decimal("0.00")
-        current_money_payment_hours = Decimal("0.00")
-        payment_day_fields: list[str] = []
-        payment_hours_fields: list[str] = []
-        payment_money_fields: list[str] = []
+        compensation_entries: list[dict[str, Decimal | int | str]] = []
 
         for index in range(7):
             shift_1_field = f"day_{index}_shift_1"
@@ -394,27 +390,26 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             compensation_hours_field = f"day_{index}_compensation_hours"
             compensation_mode = cleaned_data.get(compensation_mode_field, "") or ""
             compensation_hours = Decimal(str(cleaned_data.get(compensation_hours_field) or "0"))
+            compensation_entries.append(
+                {
+                    "index": index,
+                    "mode": compensation_mode,
+                    "hours": compensation_hours,
+                }
+            )
 
             if compensation_mode == ScheduleLine.CompensationMode.PAY_DAY:
-                payment_day_fields.append(compensation_mode_field)
-                current_payment_days += 1
                 cleaned_data[shift_1_field] = rest_shift_label
                 cleaned_data[shift_2_field] = ""
                 cleaned_data[compensation_hours_field] = Decimal("0.00")
             elif compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
-                payment_hours_fields.append(compensation_hours_field)
                 if compensation_hours <= Decimal("0.00"):
                     self.add_error(compensation_hours_field, "Pago horas requiere una cantidad mayor que cero.")
-                else:
-                    current_payment_hours += compensation_hours
             elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY:
                 if not self.allow_money_payment:
                     self.add_error(compensation_mode_field, "Pago en dinero solo esta disponible para el perfil administrador.")
-                payment_money_fields.append(compensation_hours_field)
                 if compensation_hours <= Decimal("0.00"):
                     self.add_error(compensation_hours_field, "Pago en dinero requiere una cantidad mayor que cero.")
-                else:
-                    current_money_payment_hours += compensation_hours
             else:
                 cleaned_data[compensation_hours_field] = Decimal("0.00")
 
@@ -443,6 +438,14 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                         compensation_hours_field,
                         "El pago por horas supera las horas necesarias para completar la jornada del dia.",
                     )
+            elif (
+                compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY
+                and compensation_hours > day_reference_hours
+            ):
+                self.add_error(
+                    compensation_hours_field,
+                    "El pago en dinero no puede descontar mas de la jornada diaria en un mismo dia.",
+                )
 
             if not shift_1 or not shift_2:
                 continue
@@ -490,15 +493,36 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                         "El turno 2 debe iniciar despues de que termine el turno 1.",
                     )
 
-        if Decimal(str(current_payment_days)) > prior_day_balance:
-            message = "No hay suficientes dias acumulados de semanas anteriores para aplicar pago dia."
-            for field_name in payment_day_fields:
-                self.add_error(field_name, message)
+        manual_day_adjustment = Decimal(str(cleaned_data.get("manual_day_adjustment") or "0"))
+        manual_hour_adjustment = Decimal(str(cleaned_data.get("manual_hour_adjustment") or "0"))
+        payment_resolution = resolve_compensation_usage(
+            compensation_entries,
+            available_day_balance=prior_day_balance + manual_day_adjustment,
+            available_hour_balance=prior_hour_balance + manual_hour_adjustment,
+            day_reference_hours=day_reference_hours,
+        )
 
-        if current_payment_hours + current_money_payment_hours > prior_hour_balance:
-            message = "Las horas descontadas superan el saldo previo disponible de semanas anteriores."
-            for field_name in payment_hours_fields + payment_money_fields:
-                self.add_error(field_name, message)
+        for index in payment_resolution["invalid_pay_day_indices"]:
+            self.add_error(
+                f"day_{index}_compensation_mode",
+                f"Pago dia requiere 1 dia acumulado o {day_reference_hours} h acumuladas disponibles.",
+            )
+
+        for index in payment_resolution["invalid_pay_hours_indices"]:
+            compensation_hours = Decimal(str(cleaned_data.get(f"day_{index}_compensation_hours") or "0"))
+            if compensation_hours > Decimal("0.00"):
+                self.add_error(
+                    f"day_{index}_compensation_hours",
+                    "Las horas a descontar superan el saldo acumulado disponible hasta ese dia.",
+                )
+
+        for index in payment_resolution["invalid_pay_money_indices"]:
+            compensation_hours = Decimal(str(cleaned_data.get(f"day_{index}_compensation_hours") or "0"))
+            if compensation_hours > Decimal("0.00"):
+                self.add_error(
+                    f"day_{index}_compensation_hours",
+                    "El pago en dinero supera el saldo acumulado disponible hasta ese dia.",
+                )
 
         return cleaned_data
 

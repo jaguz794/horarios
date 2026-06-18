@@ -1,5 +1,5 @@
 from django.conf import settings
-from datetime import time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.db import models
@@ -130,6 +130,31 @@ class ShiftTemplate(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.label
+
+    def save(self, *args, **kwargs):
+        if self.start_time and self.end_time and self.end_time == time(21, 30) and self.end_time > self.start_time:
+            self.end_time = time(21, 0)
+
+        if self.start_time and self.end_time:
+            start_value = datetime.combine(date.today(), self.start_time)
+            end_value = datetime.combine(date.today(), self.end_time)
+            if end_value <= start_value:
+                end_value += timedelta(days=1)
+            self.duration_hours = Decimal(str((end_value - start_value).total_seconds() / 3600)).quantize(Decimal("0.01"))
+            self.night_bonus_hours = Decimal("0.00")
+            self.label = f"{self.start_time:%H:%M}-{self.end_time:%H:%M}"
+            self.counts_as_worked_time = True
+        else:
+            self.duration_hours = Decimal("0.00")
+            self.night_bonus_hours = Decimal("0.00")
+
+        if not self.display_order:
+            max_order = (
+                ShiftTemplate.objects.exclude(pk=self.pk).aggregate(max_order=models.Max("display_order"))["max_order"] or 0
+            )
+            self.display_order = max_order + 1
+
+        super().save(*args, **kwargs)
 
     @property
     def spans_next_day(self) -> bool:

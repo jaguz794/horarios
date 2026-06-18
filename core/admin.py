@@ -2,8 +2,7 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django import forms
-from datetime import datetime, time
-from decimal import Decimal
+from datetime import time
 
 from core.models import Department, JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
 
@@ -46,34 +45,53 @@ class JobRoleAdmin(admin.ModelAdmin):
 class ShiftTemplateAdmin(admin.ModelAdmin):
     list_display = (
         "label",
-        "code",
+        "start_time",
+        "end_time",
         "duration_hours",
-        "night_bonus_hours",
         "counts_as_worked_time",
         "is_active",
     )
     list_filter = ("counts_as_worked_time", "is_active")
-    search_fields = ("label", "code")
+    search_fields = ("label",)
+    fields = ("label", "start_time", "end_time", "counts_as_worked_time", "is_active")
 
     class ShiftTemplateAdminForm(forms.ModelForm):
+        label = forms.CharField(
+            required=False,
+            help_text="Si defines hora inicial y final, el nombre del turno se genera automaticamente.",
+        )
+
         class Meta:
             model = ShiftTemplate
-            fields = "__all__"
+            fields = ("label", "start_time", "end_time", "counts_as_worked_time", "is_active")
 
         def clean(self):
             cleaned_data = super().clean()
             start_time = cleaned_data.get("start_time")
             end_time = cleaned_data.get("end_time")
-            duration_hours = cleaned_data.get("duration_hours")
+            counts_as_worked_time = bool(cleaned_data.get("counts_as_worked_time"))
+            label = (cleaned_data.get("label") or "").strip()
+
+            if bool(start_time) != bool(end_time):
+                message = "Debes definir hora inicial y hora final para guardar el turno."
+                self.add_error("start_time", message)
+                self.add_error("end_time", message)
+                return cleaned_data
 
             if start_time and end_time and end_time == time(21, 30) and end_time > start_time:
                 cleaned_data["end_time"] = time(21, 0)
-                if duration_hours not in (None, ""):
-                    start_value = datetime.combine(datetime.today().date(), start_time)
-                    end_value = datetime.combine(datetime.today().date(), cleaned_data["end_time"])
-                    cleaned_data["duration_hours"] = Decimal(str((end_value - start_value).total_seconds() / 3600)).quantize(
-                        Decimal("0.01")
-                    )
+                end_time = cleaned_data["end_time"]
+
+            if start_time and end_time:
+                cleaned_data["label"] = f"{start_time:%H:%M}-{end_time:%H:%M}"
+                cleaned_data["counts_as_worked_time"] = True
+            elif counts_as_worked_time:
+                message = "Los turnos laborados deben tener hora inicial y hora final."
+                self.add_error("start_time", message)
+                self.add_error("end_time", message)
+            elif not label:
+                self.add_error("label", "Las novedades sin horario necesitan un nombre.")
+
             return cleaned_data
 
     form = ShiftTemplateAdminForm
