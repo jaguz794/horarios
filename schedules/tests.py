@@ -83,11 +83,7 @@ class ScheduleCalculationTests(TestCase):
         )
 
     def build_form_data(self, **overrides):
-        data = {
-            "pending_dates_note": "",
-            "pending_days": "0",
-            "pending_hours": "0",
-        }
+        data = {}
         for index in range(7):
             data[f"day_{index}_shift_1"] = ""
             data[f"day_{index}_shift_2"] = ""
@@ -109,7 +105,6 @@ class ScheduleCalculationTests(TestCase):
             daily_max_hours=Decimal("8.00"),
             day_0_shift_1="06:00-10:00",
             day_0_shift_2="13:00-17:00",
-            pending_hours=Decimal("1.00"),
         )
 
         recalculate_schedule_line(line)
@@ -117,7 +112,7 @@ class ScheduleCalculationTests(TestCase):
         self.assertEqual(line.day_0_hours, Decimal("8.00"))
         self.assertEqual(line.total_hours, Decimal("8.00"))
         self.assertEqual(line.overtime_hours, Decimal("0.00"))
-        self.assertEqual(line.pending_hours_variance, Decimal("1.00"))
+        self.assertEqual(line.accrued_total_hours_balance, Decimal("8.00"))
 
     def test_recalculate_line_accumulates_prior_balance_and_current_payments(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -130,11 +125,9 @@ class ScheduleCalculationTests(TestCase):
             employee_identifier="128",
             employee_name="Empleado Saldo",
             daily_max_hours=Decimal("8.00"),
-            pending_days=Decimal("2.00"),
-            pending_hours=Decimal("3.00"),
-            overtime_hours=Decimal("4.00"),
-            payment_days_used=1,
-            payment_hours_used=Decimal("1.50"),
+            accrued_day_balance=Decimal("1.00"),
+            accrued_hour_balance=Decimal("5.50"),
+            accrued_total_hours_balance=Decimal("13.50"),
         )
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
@@ -144,8 +137,6 @@ class ScheduleCalculationTests(TestCase):
             daily_max_hours=Decimal("8.00"),
             day_0_shift_1="08:00-16:00",
             day_1_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
-            pending_days=Decimal("1.00"),
-            pending_hours=Decimal("2.00"),
         )
 
         recalculate_schedule_line(line)
@@ -153,7 +144,9 @@ class ScheduleCalculationTests(TestCase):
         self.assertEqual(line.overtime_hours, Decimal("4.00"))
         self.assertEqual(line.payment_days_used, 1)
         self.assertEqual(line.payment_hours_used, Decimal("0.00"))
-        self.assertEqual(line.pending_hours_variance, Decimal("19.50"))
+        self.assertEqual(line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("9.50"))
+        self.assertEqual(line.accrued_total_hours_balance, Decimal("17.50"))
 
     def test_recalculate_line_tracks_night_bonus_hours(self):
         line = ScheduleLine.objects.create(
@@ -328,15 +321,13 @@ class ScheduleCalculationTests(TestCase):
             weekly_target_hours=Decimal("4.00"),
             daily_max_hours=Decimal("8.00"),
             day_0_shift_1="08:00-16:00",
-            pending_dates_note="2026-06-20,2026-06-21",
-            pending_days=Decimal("1.00"),
         )
 
         recalculate_schedule_line(line)
 
         compact_summary = get_schedule_line_compact_alert_summary(line)
         self.assertIn("horas semanales", compact_summary.lower())
-        self.assertIn("pendientes", compact_summary.lower())
+        self.assertNotIn("pendientes", compact_summary.lower())
 
     def test_schedule_lines_are_ordered_by_role_name_then_employee(self):
         ScheduleLine.objects.create(
@@ -381,63 +372,6 @@ class ScheduleCalculationTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("jornadas continuas", form.errors["day_0_shift_2"][0].lower())
 
-    def test_form_accepts_pending_dates_outside_week(self):
-        line = ScheduleLine.objects.create(
-            schedule=self.schedule,
-            employee_identifier="125",
-            employee_name="Empleado Demo 3",
-        )
-        form = ScheduleLineForm(
-            data=self.build_form_data(
-                pending_dates_note="2026-06-20",
-                pending_days="1",
-            ),
-            instance=line,
-            schedule=self.schedule,
-            shift_choices=[],
-            secondary_shift_choices=[],
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_form_rejects_decimal_pending_days(self):
-        line = ScheduleLine.objects.create(
-            schedule=self.schedule,
-            employee_identifier="127",
-            employee_name="Empleado Demo 4",
-        )
-        form = ScheduleLineForm(
-            data=self.build_form_data(pending_days="1.5"),
-            instance=line,
-            schedule=self.schedule,
-            shift_choices=[],
-            secondary_shift_choices=[],
-        )
-
-        self.assertFalse(form.is_valid())
-        self.assertIn("entero", form.errors["pending_days"][0].lower())
-
-    def test_form_rejects_pending_dates_mismatch(self):
-        line = ScheduleLine.objects.create(
-            schedule=self.schedule,
-            employee_identifier="129",
-            employee_name="Empleado Demo 5",
-        )
-        form = ScheduleLineForm(
-            data=self.build_form_data(
-                pending_dates_note="2026-06-10,2026-06-11",
-                pending_days="1",
-            ),
-            instance=line,
-            schedule=self.schedule,
-            shift_choices=[],
-            secondary_shift_choices=[],
-        )
-
-        self.assertFalse(form.is_valid())
-        self.assertIn("coincidir", form.errors["pending_dates_note"][0].lower())
-        self.assertIn("coincidir", form.errors["pending_days"][0].lower())
-
     def test_form_rejects_pay_day_without_prior_day_balance(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
@@ -453,7 +387,7 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertFalse(form.is_valid())
-        self.assertIn("horarios anteriores", form.errors["day_0_compensation_mode"][0].lower())
+        self.assertIn("hasta ese dia", form.errors["day_0_compensation_mode"][0].lower())
 
     def test_form_pay_day_converts_day_to_rest_automatically(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -465,8 +399,8 @@ class ScheduleCalculationTests(TestCase):
             schedule=prior_schedule,
             employee_identifier="131",
             employee_name="Empleado Demo 7",
-            pending_days=Decimal("1.00"),
             daily_max_hours=Decimal("8.00"),
+            accrued_day_balance=Decimal("1.00"),
         )
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
@@ -498,7 +432,7 @@ class ScheduleCalculationTests(TestCase):
             schedule=prior_schedule,
             employee_identifier="132",
             employee_name="Empleado Demo 8",
-            pending_hours=Decimal("1.00"),
+            accrued_hour_balance=Decimal("1.00"),
         )
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
@@ -517,7 +451,7 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertFalse(form.is_valid())
-        self.assertIn("saldo previo disponible", form.errors["day_0_compensation_hours"][0].lower())
+        self.assertIn("saldo acumulado disponible hasta ese dia", form.errors["day_0_compensation_hours"][0].lower())
 
     def test_form_rejects_pay_hours_above_needed_for_daily_journey(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -529,8 +463,8 @@ class ScheduleCalculationTests(TestCase):
             schedule=prior_schedule,
             employee_identifier="134",
             employee_name="Empleado Demo 9",
-            pending_hours=Decimal("5.00"),
             daily_max_hours=Decimal("8.00"),
+            accrued_hour_balance=Decimal("5.00"),
         )
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
@@ -608,8 +542,6 @@ class ScheduleDeleteViewTests(TestCase):
             weekly_target_hours=Decimal("4.00"),
             daily_max_hours=Decimal("8.00"),
             day_0_shift_1="08:00-16:00",
-            pending_dates_note="2026-06-10,2026-06-11",
-            pending_days=Decimal("1.00"),
         )
         recalculate_schedule_line(self.line)
         self.line.save()
@@ -675,13 +607,15 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertContains(response, "Excel")
         self.assertContains(response, "Cargar saldos iniciales")
 
-    def test_site_user_can_add_manual_schedule_line(self):
+    @patch("schedules.forms.lookup_third_party_by_identifier", return_value=None)
+    def test_site_user_can_add_manual_schedule_line(self, _mock_lookup):
         self.client.login(username="operador_delete", password="secret")
 
         response = self.client.post(
             reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
             {
                 "manual_add_submit": "1",
+                "manual-lookup_attempts": "2",
                 "manual-employee_identifier": "987654321",
                 "manual-employee_name": "Trabajador Manual",
                 "manual-job_role": str(self.job_role.pk),
@@ -798,7 +732,7 @@ class ScheduleDeleteViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Revisa horas semanales, pendientes.")
+        self.assertContains(response, "Revisa horas semanales.")
         self.assertNotContains(response, "Supera el objetivo semanal")
 
     def test_admin_sees_detailed_alert_summary(self):
@@ -886,9 +820,6 @@ class ScheduleDeleteViewTests(TestCase):
                 "lines-0-day_6_shift_2": "",
                 "lines-0-day_6_compensation_mode": "",
                 "lines-0-day_6_compensation_hours": "",
-                "lines-0-pending_dates_note": self.line.pending_dates_note,
-                "lines-0-pending_days": "1",
-                "lines-0-pending_hours": "0",
             },
             SERVER_NAME="127.0.0.1",
             SERVER_PORT="8000",

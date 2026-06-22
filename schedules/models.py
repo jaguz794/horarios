@@ -143,13 +143,9 @@ class ScheduleLine(TimeStampedModel):
     special_days_generated = models.PositiveSmallIntegerField(default=0)
     manual_day_adjustment = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     manual_hour_adjustment = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
-    pending_dates_note = models.TextField(blank=True)
-    pending_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
-    pending_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     payment_days_used = models.PositiveSmallIntegerField(default=0)
     payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     money_payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
-    pending_hours_variance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     accrued_day_balance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     accrued_hour_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
     accrued_total_hours_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
@@ -165,11 +161,6 @@ class ScheduleLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.employee_identifier} - {self.employee_name}"
-
-    @property
-    def pending_dates(self) -> list[str]:
-        return [item.strip() for item in (self.pending_dates_note or "").split(",") if item.strip()]
-
 
 class EmployeeInitialBalance(TimeStampedModel):
     employee_identifier = models.CharField(max_length=30, unique=True)

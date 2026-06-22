@@ -183,7 +183,7 @@ class ReportHubView(LoginRequiredMixin, TemplateView):
                 rows = build_weekly_balance_report_rows(lines)
                 return build_excel_response(
                     "ConsolidadoSemanal",
-                    ["Sede", "Cargo", "Cedula", "Nombre", "Horas pendientes", "Recargos nocturnos"],
+                    ["Sede", "Cargo", "Cedula", "Nombre", "Saldo acumulado (h equivalentes)", "Recargos nocturnos"],
                     rows,
                     "consolidado_semanal_horarios.xlsx",
                 )

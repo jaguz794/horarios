@@ -776,12 +776,6 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
 
     manual_day_adjustment = decimal_hours(line.manual_day_adjustment)
     manual_hour_adjustment = decimal_hours(line.manual_hour_adjustment)
-    if manual_day_adjustment == Decimal("0.00") and decimal_hours(line.pending_days) != Decimal("0.00"):
-        manual_day_adjustment = decimal_hours(line.pending_days)
-        line.manual_day_adjustment = manual_day_adjustment
-    if manual_hour_adjustment == Decimal("0.00") and decimal_hours(line.pending_hours) != Decimal("0.00"):
-        manual_hour_adjustment = decimal_hours(line.pending_hours)
-        line.manual_hour_adjustment = manual_hour_adjustment
     prior_day_balance = balance_snapshot["prior_day_balance"]
     prior_hour_balance = balance_snapshot["prior_hour_balance"]
     prior_total_balance = balance_snapshot["prior_total_balance"]
@@ -860,11 +854,6 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     if line.accrued_hour_balance < Decimal("0.00"):
         warnings.append("El saldo de horas queda a favor de la empresa.")
 
-    # Mantiene consistencia con datos anteriores, pero ya no se diligencian manualmente.
-    line.pending_dates_note = ""
-    line.pending_days = Decimal("0.00")
-    line.pending_hours = Decimal("0.00")
-    line.pending_hours_variance = line.accrued_total_hours_balance
     line.validation_summary = " ".join(warnings)
     line.warnings_count = len(warnings)
     return line

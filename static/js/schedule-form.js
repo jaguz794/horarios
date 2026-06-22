@@ -242,7 +242,6 @@ function initScheduleCalculations() {
     const dailyMax = parseDecimal(row.dataset.dailyMax);
     const priorDayBalance = parseDecimal(row.dataset.priorDayBalance);
     const priorHourBalance = parseDecimal(row.dataset.priorHourBalance);
-    const priorTotalBalance = parseDecimal(row.dataset.priorTotalBalance);
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
     const hasOvertimeRestriction = row.dataset.overtimeRestrictionActive === "true";
     const overtimeRestrictionLimit = parseDecimal(row.dataset.overtimeRestrictionLimit);

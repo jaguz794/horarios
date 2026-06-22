@@ -155,7 +155,6 @@
             data-daily-max="{{ line_form.instance.daily_max_hours }}"
             data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance }}"
             data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance }}"
-            data-prior-total-balance="{{ line_form.balance_snapshot.prior_total_balance }}"
             data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
             data-overtime-restriction-active="{% if line_form.overtime_restriction %}true{% else %}false{% endif %}"
             data-overtime-restriction-limit="{{ line_form.overtime_restriction_limit|default:'' }}"

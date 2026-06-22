@@ -95,8 +95,6 @@ class DashboardViewTests(TestCase):
             employee_identifier="102",
             employee_name="Carla",
             job_role_name="SUPERVISOR",
-            pending_dates_note="2026-06-20",
-            pending_days=Decimal("0.00"),
             warnings_count=1,
         )
 
@@ -116,7 +114,6 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "2 persona(s) cargadas.")
         self.assertContains(response, "2 alerta(s) en 1 colaborador(es).")
         self.assertContains(response, "Revisa horas semanales.")
-        self.assertContains(response, "Revisa pendientes.")
 
 
 class SiteOrderingTests(TestCase):

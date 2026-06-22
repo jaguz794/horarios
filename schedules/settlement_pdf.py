@@ -27,8 +27,8 @@ class SettlementRow:
     employee_identifier: str
     employee_name: str
     job_role_name: str
-    pending_days: Decimal
-    pending_hours: Decimal
+    accrued_days: Decimal
+    accrued_hours: Decimal
 
 
 def format_balance(value: Decimal | int | float | str) -> str:
@@ -41,17 +41,17 @@ def format_balance(value: Decimal | int | float | str) -> str:
 def get_settlement_rows(schedule: WeeklySchedule) -> list[SettlementRow]:
     rows: list[SettlementRow] = []
     for line in schedule.lines.all().order_by("job_role_name", "employee_name"):
-        pending_days = Decimal(str(line.accrued_day_balance or "0")).quantize(TWO_DECIMALS)
-        pending_hours = Decimal(str(line.accrued_hour_balance or "0")).quantize(TWO_DECIMALS)
-        if pending_days == Decimal("0.00") and pending_hours == Decimal("0.00"):
+        accrued_days = Decimal(str(line.accrued_day_balance or "0")).quantize(TWO_DECIMALS)
+        accrued_hours = Decimal(str(line.accrued_hour_balance or "0")).quantize(TWO_DECIMALS)
+        if accrued_days == Decimal("0.00") and accrued_hours == Decimal("0.00"):
             continue
         rows.append(
             SettlementRow(
                 employee_identifier=(line.employee_identifier or "").strip(),
                 employee_name=(line.employee_name or "").strip(),
                 job_role_name=(line.job_role_name or "SIN CARGO").strip() or "SIN CARGO",
-                pending_days=pending_days,
-                pending_hours=pending_hours,
+                accrued_days=accrued_days,
+                accrued_hours=accrued_hours,
             )
         )
     return rows
@@ -138,8 +138,8 @@ def build_settlement_pdf_bytes(
             Paragraph("CEDULA", table_cell_bold),
             Paragraph("EMPLEADO", table_cell_bold),
             Paragraph("CARGO", table_cell_bold),
-            Paragraph("DIAS PENDIENTES", table_cell_bold),
-            Paragraph("HORAS PENDIENTES", table_cell_bold),
+            Paragraph("DIAS ACUMULADOS", table_cell_bold),
+            Paragraph("HORAS ACUMULADAS", table_cell_bold),
             Paragraph("FIRMA", table_cell_bold),
         ]
     ]
@@ -151,7 +151,7 @@ def build_settlement_pdf_bytes(
         table_rows.append(
             [
                 "",
-                Paragraph("Sin saldos pendientes para esta semana.", table_cell),
+                Paragraph("Sin saldos acumulados por compensar para esta semana.", table_cell),
                 "",
                 "0",
                 "0",
@@ -163,15 +163,15 @@ def build_settlement_pdf_bytes(
             role_days = Decimal("0.00")
             role_hours = Decimal("0.00")
             for role_row in role_rows:
-                role_days += role_row.pending_days
-                role_hours += role_row.pending_hours
+                role_days += role_row.accrued_days
+                role_hours += role_row.accrued_hours
                 table_rows.append(
                     [
                         Paragraph(role_row.employee_identifier, table_cell),
                         Paragraph(role_row.employee_name, table_cell),
                         Paragraph(role_row.job_role_name, table_cell),
-                        Paragraph(format_balance(role_row.pending_days), table_cell),
-                        Paragraph(format_balance(role_row.pending_hours), table_cell),
+                        Paragraph(format_balance(role_row.accrued_days), table_cell),
+                        Paragraph(format_balance(role_row.accrued_hours), table_cell),
                         "",
                     ]
                 )
