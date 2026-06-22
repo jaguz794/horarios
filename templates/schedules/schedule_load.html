@@ -23,3 +23,30 @@
 </section>
 {% endblock %}
 
+{% block extra_scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const weekStartInput = document.getElementById("id_week_start_date");
+    if (!weekStartInput) {
+      return;
+    }
+
+    const validateSundayOnly = () => {
+      if (!weekStartInput.value) {
+        weekStartInput.setCustomValidity("");
+        return;
+      }
+      const selectedDate = new Date(`${weekStartInput.value}T00:00:00`);
+      if (selectedDate.getDay() !== 0) {
+        weekStartInput.setCustomValidity("Solo se pueden seleccionar domingos como inicio de semana.");
+      } else {
+        weekStartInput.setCustomValidity("");
+      }
+    };
+
+    weekStartInput.addEventListener("change", validateSundayOnly);
+    weekStartInput.addEventListener("input", validateSundayOnly);
+    validateSundayOnly();
+  });
+</script>
+{% endblock %}

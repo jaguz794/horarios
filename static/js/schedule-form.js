@@ -93,10 +93,19 @@ function initScheduleCalculations() {
     return parseRangeMetrics(normalized);
   };
 
-  const resolvePaymentUsage = (entries, availableDayBalance, availableHourBalance, dayReferenceHoursValue) => {
+  const resolvePaymentUsage = (
+    entries,
+    availableDayBalance,
+    availableHourBalance,
+    dayReferenceHoursValue,
+    weeklyTargetHoursValue,
+  ) => {
     let remainingDayBalance = Math.max(roundHours(availableDayBalance), 0);
     let remainingHourBalance = Math.max(roundHours(availableHourBalance), 0);
     const normalizedDayReferenceHours = Math.max(roundHours(dayReferenceHoursValue), 0);
+    const normalizedWeeklyTargetHours = Math.max(roundHours(weeklyTargetHoursValue), 0);
+    let cumulativeWorkedHours = 0;
+    let cumulativeOvertimeHours = 0;
 
     let paymentDaysUsed = 0;
     let paymentDaysFromDayBalance = 0;
@@ -114,13 +123,19 @@ function initScheduleCalculations() {
       .sort((left, right) => left.index - right.index)
       .forEach((entry) => {
         const requestedHours = roundHours(entry.hours);
+        const workedHours = roundHours(entry.workedHours);
+        const specialGenerated = Boolean(entry.specialGenerated);
         const dayState = {
           mode: entry.mode,
           requestedHours,
           source: "",
           valid: true,
+          availableDayBalance: remainingDayBalance,
+          availableHourBalance: remainingHourBalance,
           remainingDayBalance,
           remainingHourBalance,
+          generatedDay: false,
+          generatedHours: 0,
         };
 
         if (entry.mode === "pay_day") {
@@ -161,6 +176,24 @@ function initScheduleCalculations() {
             dayState.valid = false;
           }
           dayState.source = "hour_balance";
+        }
+
+        if (specialGenerated && workedHours > 0.001) {
+          remainingDayBalance = roundHours(remainingDayBalance + 1);
+          dayState.generatedDay = true;
+        }
+
+        const previousOvertimeHours = cumulativeOvertimeHours;
+        cumulativeWorkedHours = roundHours(cumulativeWorkedHours + workedHours);
+        cumulativeOvertimeHours = roundHours(
+          Math.max(cumulativeWorkedHours - normalizedWeeklyTargetHours, 0),
+        );
+        const generatedHours = roundHours(
+          Math.max(cumulativeOvertimeHours - previousOvertimeHours, 0),
+        );
+        if (generatedHours > 0.001) {
+          remainingHourBalance = roundHours(remainingHourBalance + generatedHours);
+          dayState.generatedHours = generatedHours;
         }
 
         dayState.remainingDayBalance = remainingDayBalance;
@@ -376,11 +409,12 @@ function initScheduleCalculations() {
         const dailyHours = roundHours(shift1Metrics.hours + shift2Metrics.hours);
         const dailyNightHours = roundHours(shift1Metrics.night_hours + shift2Metrics.night_hours);
         const compensationHoursValue = roundHours(parseDecimal(compensationHours?.value));
+        const specialGenerated = Boolean(dayCell.dataset.specialDay) && dailyHours > 0.001;
 
         totalHours = roundHours(totalHours + dailyHours);
         totalNightHours = roundHours(totalNightHours + dailyNightHours);
 
-        if (dayCell.dataset.specialDay && dailyHours > 0.001) {
+        if (specialGenerated) {
           specialDaysGenerated += 1;
         }
 
@@ -430,6 +464,7 @@ function initScheduleCalculations() {
           modeValue,
           compensationHoursValue,
           dailyHours,
+          specialGenerated,
         });
       });
 
@@ -441,10 +476,13 @@ function initScheduleCalculations() {
           index: dayState.dayIndex,
           mode: dayState.modeValue,
           hours: dayState.compensationHoursValue,
+          workedHours: dayState.dailyHours,
+          specialGenerated: dayState.specialGenerated,
         })),
         priorDayBalance + manualDayAdjustment,
         priorHourBalance + manualHourAdjustment,
         dayReferenceHours,
+        effectiveWeeklyTarget,
       );
       const endingDayBalance = roundHours(
         priorDayBalance

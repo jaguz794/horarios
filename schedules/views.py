@@ -25,6 +25,7 @@ from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedul
 from schedules.reporting import build_initial_balance_template_response, build_schedule_excel_response
 from schedules.services import (
     build_shift_metrics_catalog,
+    copy_schedule_template,
     import_employee_initial_balances,
     rebuild_balances_for_employees_from_week,
     save_schedule_line_with_balances,
@@ -87,6 +88,7 @@ class ScheduleLoadView(LoginRequiredMixin, FormView):
         config = SystemConfiguration.load()
         site = form.cleaned_data["site"]
         week_start_date = form.cleaned_data["week_start_date"]
+        copy_from_schedule = form.cleaned_data.get("copy_from_schedule")
         schedule, created = WeeklySchedule.objects.get_or_create(
             site=site,
             week_start_date=week_start_date,
@@ -111,6 +113,20 @@ class ScheduleLoadView(LoginRequiredMixin, FormView):
             )
         else:
             messages.info(self.request, "Se abrio el horario existente sin recargar personal.")
+
+        if copy_from_schedule and not schedule.is_closed:
+            copied_count, source_line_count = copy_schedule_template(copy_from_schedule, schedule)
+            if copied_count:
+                messages.success(
+                    self.request,
+                    f"Plantilla copiada desde la semana {copy_from_schedule.week_start_date:%d/%m/%Y}. "
+                    f"Se actualizaron {copied_count} trabajador(es).",
+                )
+            else:
+                messages.warning(
+                    self.request,
+                    f"La semana base tenia {source_line_count} registro(s), pero no hubo coincidencias para copiar en esta sede.",
+                )
 
         return redirect("schedules:edit", pk=schedule.pk)
 

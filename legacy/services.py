@@ -148,6 +148,7 @@ def fetch_active_staff_for_site(
             ON p.id_contrato = c.codigo
         WHERE
             c.estado = 'A'
+            AND TRIM(COALESCE(c.grupo_empleados, '')) = '02'
             AND TRIM(c.id_co) = %s
         ORDER BY
             TRIM(c.id_co),

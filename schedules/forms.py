@@ -9,9 +9,10 @@ from django import forms
 from django.forms import inlineformset_factory
 from django.utils import timezone
 
-from core.access import get_accessible_sites_queryset
+from core.access import get_accessible_schedules_queryset, get_accessible_sites_queryset
 from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration
 from legacy.services import lookup_third_party_by_identifier
+from schedules.calendar_utils import get_special_day_label
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
     get_rest_shift_label,
@@ -115,15 +116,51 @@ class ScheduleLoadForm(StyledFormMixin, forms.Form):
     )
     week_start_date = forms.DateField(
         label="Dia inicio de semana",
-        widget=DatePickerInput(),
+        widget=DatePickerInput(attrs={"step": "7", "min": "2024-01-07"}),
         initial=current_week_start,
-        help_text="Ingresa el primer dia de la semana que vas a programar.",
+        help_text="Ingresa el domingo inicial de la semana que vas a programar.",
+    )
+    copy_from_schedule = forms.ModelChoiceField(
+        queryset=WeeklySchedule.objects.none(),
+        required=False,
+        label="Copiar turnos desde",
+        help_text="Opcional. Trae los turnos de una semana anterior de la misma sede para usarlos como base.",
     )
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["site"].queryset = get_accessible_sites_queryset(user, Site.objects.filter(is_active=True))
+        copy_queryset = get_accessible_schedules_queryset(
+            user,
+            WeeklySchedule.objects.select_related("site"),
+        ).order_by("-week_start_date", "site__code")
+        self.fields["copy_from_schedule"].queryset = copy_queryset
+        self.fields["copy_from_schedule"].empty_label = "No copiar una semana anterior"
+        self.fields["copy_from_schedule"].label_from_instance = (
+            lambda obj: f"{obj.site.name} | {obj.week_start_date:%d/%m/%Y} a {obj.week_end_date:%d/%m/%Y}"
+        )
         self.apply_style()
+
+    def clean_week_start_date(self):
+        week_start_date = self.cleaned_data["week_start_date"]
+        if week_start_date.weekday() != 6:
+            raise forms.ValidationError("El horario solo se puede crear usando domingos como inicio de semana.")
+        return week_start_date
+
+    def clean(self):
+        cleaned_data = super().clean()
+        site = cleaned_data.get("site")
+        week_start_date = cleaned_data.get("week_start_date")
+        copy_from_schedule = cleaned_data.get("copy_from_schedule")
+
+        if copy_from_schedule and site and copy_from_schedule.site_id != site.pk:
+            self.add_error("copy_from_schedule", "La plantilla a copiar debe corresponder a la misma sede.")
+
+        if copy_from_schedule and site and week_start_date:
+            if copy_from_schedule.site_id == site.pk and copy_from_schedule.week_start_date == week_start_date:
+                self.add_error("copy_from_schedule", "Selecciona una semana diferente a la que vas a crear.")
+
+        return cleaned_data
 
 
 class WeeklyScheduleForm(StyledFormMixin, forms.ModelForm):
@@ -395,6 +432,8 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                     "index": index,
                     "mode": compensation_mode,
                     "hours": compensation_hours,
+                    "worked_hours": Decimal("0.00"),
+                    "special_generated": False,
                 }
             )
 
@@ -420,6 +459,14 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             shift_1_hours, _ = resolve_shift_metrics(shift_1_label, config=config, shift_templates=shift_map)
             shift_2_hours, _ = resolve_shift_metrics(shift_2_label, config=config, shift_templates=shift_map)
             day_worked_hours = shift_1_hours + shift_2_hours
+            compensation_entries[-1]["worked_hours"] = day_worked_hours
+            schedule_for_day = self.instance.schedule if getattr(self.instance, "schedule_id", None) else self.schedule
+            is_special_day = bool(
+                schedule_for_day
+                and schedule_for_day.week_start_date
+                and get_special_day_label(schedule_for_day.week_start_date + timedelta(days=index))
+            )
+            compensation_entries[-1]["special_generated"] = bool(day_worked_hours > Decimal("0.00") and is_special_day)
 
             if shift_2 and not shift_1:
                 self.add_error(shift_1_field, "Debes seleccionar primero el turno 1.")
@@ -500,12 +547,13 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             available_day_balance=prior_day_balance + manual_day_adjustment,
             available_hour_balance=prior_hour_balance + manual_hour_adjustment,
             day_reference_hours=day_reference_hours,
+            weekly_target_hours=self.instance.weekly_target_hours or config.default_weekly_hours,
         )
 
         for index in payment_resolution["invalid_pay_day_indices"]:
             self.add_error(
                 f"day_{index}_compensation_mode",
-                f"Pago dia requiere 1 dia acumulado o {day_reference_hours} h acumuladas disponibles.",
+                f"Pago dia requiere 1 dia acumulado o {day_reference_hours} h acumuladas disponibles hasta ese dia.",
             )
 
         for index in payment_resolution["invalid_pay_hours_indices"]:

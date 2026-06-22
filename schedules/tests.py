@@ -11,9 +11,10 @@ from django.urls import reverse
 from openpyxl import Workbook, load_workbook
 
 from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
-from schedules.forms import ScheduleLineForm
+from schedules.forms import ScheduleLineForm, ScheduleLoadForm
 from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
 from schedules.services import (
+    copy_schedule_template,
     get_rest_shift_label,
     get_schedule_line_compact_alert_summary,
     parse_shift_hours,
@@ -188,6 +189,105 @@ class ScheduleCalculationTests(TestCase):
         self.assertEqual(line.accrued_day_balance, Decimal("2.00"))
         self.assertEqual(line.accrued_hour_balance, Decimal("3.50"))
         self.assertEqual(line.accrued_total_hours_balance, Decimal("19.50"))
+
+    def test_form_accepts_pay_day_using_same_week_special_day_generated_before(self):
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="141",
+            employee_name="Empleado Semana",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="08:00-16:00",
+                day_3_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_form_accepts_pay_hours_using_same_week_overtime_generated_before(self):
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="141A",
+            employee_name="Empleado Horas Semana",
+            weekly_target_hours=Decimal("4.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="08:00-16:00",
+                day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_HOURS,
+                day_2_compensation_hours="4",
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_copy_schedule_template_brings_previous_week_turns(self):
+        source_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 5, 31),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        ScheduleLine.objects.create(
+            schedule=source_schedule,
+            employee_identifier="142",
+            employee_name="Empleado Base",
+            job_role_name="AUXILIAR",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+            day_0_shift_1="06:00-10:00",
+            day_0_shift_2="13:00-17:00",
+            day_1_shift_1="08:00-16:00",
+        )
+        target_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 14),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        target_line = ScheduleLine.objects.create(
+            schedule=target_schedule,
+            employee_identifier="142",
+            employee_name="Empleado Base",
+            job_role_name="AUXILIAR",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+
+        copied_count, _ = copy_schedule_template(source_schedule, target_schedule)
+
+        target_line.refresh_from_db()
+        self.assertEqual(copied_count, 1)
+        self.assertEqual(target_line.day_0_shift_1, "06:00-10:00")
+        self.assertEqual(target_line.day_0_shift_2, "13:00-17:00")
+        self.assertEqual(target_line.day_1_shift_1, "08:00-16:00")
+
+    def test_schedule_load_form_rejects_non_sunday_start_date(self):
+        admin_user = User.objects.create_user(username="admin_semana", password="secret")
+        access = UserSiteAccess.objects.get(user=admin_user)
+        access.role = UserSiteAccess.Role.ADMIN
+        access.save()
+        form = ScheduleLoadForm(
+            data={
+                "site": str(self.site.pk),
+                "week_start_date": "2026-06-08",
+                "copy_from_schedule": "",
+            },
+            user=admin_user,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("domingos", form.errors["week_start_date"][0].lower())
 
     def test_compact_alert_summary_groups_main_categories(self):
         line = ScheduleLine.objects.create(

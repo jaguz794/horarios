@@ -194,16 +194,28 @@ def build_line_day_breakdown(
     return breakdown
 
 
+def schedule_day_is_special(line: ScheduleLine, index: int) -> bool:
+    schedule = getattr(line, "schedule", None)
+    if schedule is None or not schedule.week_start_date:
+        return False
+    day_date = schedule.week_start_date + timedelta(days=index)
+    return bool(get_special_day_label(day_date))
+
+
 def resolve_compensation_usage(
     compensation_entries: list[dict[str, Decimal | int | str]],
     *,
     available_day_balance: Decimal,
     available_hour_balance: Decimal,
     day_reference_hours: Decimal,
+    weekly_target_hours: Decimal | None = None,
 ) -> dict[str, Decimal | int | list[int] | dict[int, dict[str, Decimal | str | bool]]]:
     remaining_day_balance = max(decimal_hours(available_day_balance), Decimal("0.00"))
     remaining_hour_balance = max(decimal_hours(available_hour_balance), Decimal("0.00"))
     day_reference_hours = max(decimal_hours(day_reference_hours), Decimal("0.00"))
+    weekly_target_hours = max(decimal_hours(weekly_target_hours or "0"), Decimal("0.00"))
+    cumulative_worked_hours = Decimal("0.00")
+    cumulative_overtime_hours = Decimal("0.00")
 
     payment_days_used = 0
     payment_days_from_day_balance = 0
@@ -221,13 +233,19 @@ def resolve_compensation_usage(
         index = int(entry.get("index", 0))
         compensation_mode = str(entry.get("mode") or "")
         compensation_hours = decimal_hours(entry.get("hours", Decimal("0.00")) or "0")
+        worked_hours = decimal_hours(entry.get("worked_hours", Decimal("0.00")) or "0")
+        special_generated = bool(entry.get("special_generated"))
         day_state: dict[str, Decimal | str | bool] = {
             "mode": compensation_mode,
             "requested_hours": compensation_hours,
             "source": "",
             "valid": True,
+            "available_day_balance": remaining_day_balance,
+            "available_hour_balance": remaining_hour_balance,
             "remaining_day_balance": remaining_day_balance,
             "remaining_hour_balance": remaining_hour_balance,
+            "generated_day": False,
+            "generated_hours": Decimal("0.00"),
         }
 
         if compensation_mode == ScheduleLine.CompensationMode.PAY_DAY:
@@ -262,6 +280,22 @@ def resolve_compensation_usage(
                 invalid_pay_money_indices.append(index)
                 day_state["valid"] = False
             day_state["source"] = "hour_balance"
+
+        if special_generated and worked_hours > Decimal("0.00"):
+            remaining_day_balance = (remaining_day_balance + Decimal("1.00")).quantize(TWO_DECIMALS)
+            day_state["generated_day"] = True
+
+        previous_overtime_hours = cumulative_overtime_hours
+        cumulative_worked_hours = (cumulative_worked_hours + worked_hours).quantize(TWO_DECIMALS)
+        cumulative_overtime_hours = max(cumulative_worked_hours - weekly_target_hours, Decimal("0.00")).quantize(
+            TWO_DECIMALS
+        )
+        generated_hours = max(cumulative_overtime_hours - previous_overtime_hours, Decimal("0.00")).quantize(
+            TWO_DECIMALS
+        )
+        if generated_hours > Decimal("0.00"):
+            remaining_hour_balance = (remaining_hour_balance + generated_hours).quantize(TWO_DECIMALS)
+            day_state["generated_hours"] = generated_hours
 
         day_state["remaining_day_balance"] = remaining_day_balance
         day_state["remaining_hour_balance"] = remaining_hour_balance
@@ -551,12 +585,18 @@ def get_schedule_line_compact_alert_summary(
                 "index": index,
                 "mode": getattr(line, f"day_{index}_compensation_mode", "") or "",
                 "hours": getattr(line, f"day_{index}_compensation_hours", Decimal("0.00")) or "0",
+                "worked_hours": getattr(line, f"day_{index}_hours", Decimal("0.00")) or "0",
+                "special_generated": bool(
+                    decimal_hours(getattr(line, f"day_{index}_hours", Decimal("0.00")) or "0") > Decimal("0.00")
+                    and schedule_day_is_special(line, index)
+                ),
             }
             for index in range(7)
         ],
         available_day_balance=balance_snapshot["prior_day_balance"] + manual_day_adjustment,
         available_hour_balance=balance_snapshot["prior_hour_balance"] + manual_hour_adjustment,
         day_reference_hours=balance_snapshot["day_reference_hours"],
+        weekly_target_hours=line.weekly_target_hours or config.default_weekly_hours,
     )
     categories: list[str] = []
     daily_limit = line.daily_max_hours or config.default_daily_max_hours
@@ -659,12 +699,17 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
                 "index": int(day_info["index"]),
                 "mode": day_info["compensation_mode"],
                 "hours": day_info["compensation_hours"],
+                "worked_hours": day_info["worked_hours"],
+                "special_generated": bool(
+                    decimal_hours(day_info["worked_hours"]) > Decimal("0.00") and day_info["special_label"]
+                ),
             }
             for day_info in day_breakdown
         ],
         available_day_balance=prior_day_balance + manual_day_adjustment,
         available_hour_balance=prior_hour_balance + manual_hour_adjustment,
         day_reference_hours=day_reference_hours,
+        weekly_target_hours=weekly_target,
     )
     payment_days = Decimal(str(line.payment_days_used or 0))
     payment_days_from_hour_balance = Decimal(str(payment_resolution["payment_days_from_hour_balance"]))
@@ -739,12 +784,17 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
                 "index": int(day_info["index"]),
                 "mode": day_info["compensation_mode"],
                 "hours": day_info["compensation_hours"],
+                "worked_hours": day_info["worked_hours"],
+                "special_generated": bool(
+                    decimal_hours(day_info["worked_hours"]) > Decimal("0.00") and day_info["special_label"]
+                ),
             }
             for day_info in day_breakdown
         ],
         available_day_balance=balance_snapshot["prior_day_balance"] + decimal_hours(line.manual_day_adjustment),
         available_hour_balance=balance_snapshot["prior_hour_balance"] + decimal_hours(line.manual_hour_adjustment),
         day_reference_hours=day_reference_hours,
+        weekly_target_hours=line.weekly_target_hours or config.default_weekly_hours,
     )
 
     movements: list[ScheduleBalanceMovement] = []
@@ -912,6 +962,39 @@ def rebuild_balances_for_employees_from_week(
 
     for line in queryset.order_by("schedule__week_start_date", "schedule__site__code", "pk"):
         save_schedule_line_with_balances(line)
+
+
+def copy_schedule_template(source_schedule: WeeklySchedule, target_schedule: WeeklySchedule) -> tuple[int, int]:
+    if source_schedule.pk == target_schedule.pk:
+        return 0, 0
+
+    source_lines = {
+        (line.employee_identifier or "").strip(): line
+        for line in source_schedule.lines.all()
+    }
+    copied_count = 0
+    touched_employee_identifiers: list[str] = []
+
+    for line in target_schedule.lines.all():
+        employee_identifier = (line.employee_identifier or "").strip()
+        source_line = source_lines.get(employee_identifier)
+        if source_line is None:
+            continue
+
+        for index in range(7):
+            setattr(line, f"day_{index}_shift_1", getattr(source_line, f"day_{index}_shift_1", "") or "")
+            setattr(line, f"day_{index}_shift_2", getattr(source_line, f"day_{index}_shift_2", "") or "")
+            setattr(line, f"day_{index}_compensation_mode", "")
+            setattr(line, f"day_{index}_compensation_hours", Decimal("0.00"))
+
+        save_schedule_line_with_balances(line)
+        copied_count += 1
+        touched_employee_identifiers.append(employee_identifier)
+
+    if touched_employee_identifiers:
+        rebuild_balances_for_employees_from_week(target_schedule.week_start_date, touched_employee_identifiers)
+
+    return copied_count, len(source_lines)
 
 
 def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
