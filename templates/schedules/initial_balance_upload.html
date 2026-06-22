@@ -9,10 +9,10 @@
   <div class="panel-header">
     <div>
       <h2>Cargador de saldos iniciales</h2>
-      <p>Usa una plantilla Excel con las columnas <strong>Cedula</strong>, <strong>Nombre</strong>, <strong>Dias</strong> y <strong>Horas</strong>.</p>
+      <p>Usa una plantilla Excel o CSV con las columnas <strong>Cedula</strong>, <strong>Nombres y apellidos</strong>, <strong>Dias extras</strong> y <strong>Horas extras</strong>.</p>
     </div>
     <div class="header-actions">
-      <a href="{% url 'schedules:initial-balances-template' %}" class="ghost-button">Descargar plantilla</a>
+      <a href="{% url 'schedules:initial-balances-template' %}" class="ghost-button">Descargar plantilla Excel</a>
       <a href="{% url 'schedules:list' %}" class="text-link">Volver a horarios</a>
     </div>
   </div>

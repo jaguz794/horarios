@@ -244,6 +244,8 @@ function initScheduleCalculations() {
     const priorHourBalance = parseDecimal(row.dataset.priorHourBalance);
     const priorTotalBalance = parseDecimal(row.dataset.priorTotalBalance);
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
+    const hasOvertimeRestriction = row.dataset.overtimeRestrictionActive === "true";
+    const overtimeRestrictionLimit = parseDecimal(row.dataset.overtimeRestrictionLimit);
     const effectiveWeeklyTarget = weeklyTarget > 0 ? weeklyTarget : defaultWeeklyHours;
     const effectiveDailyMax = dailyMax > 0 ? dailyMax : defaultDailyMax;
     const totalCell = row.querySelector("[data-total-hours]");
@@ -312,6 +314,11 @@ function initScheduleCalculations() {
       if (summaryState.overtimeHours > 0.001) {
         liveMessages.push(`Extras calculadas: ${formatHours(summaryState.overtimeHours, true)}.`);
       }
+      if (summaryState.overtimeRestrictionExceeded) {
+        liveMessages.push(
+          `Restriccion medica: no puede superar ${formatHours(summaryState.overtimeRestrictionLimit, true)} extra(s) y esta semana lleva ${formatHours(summaryState.overtimeHours, true)}.`,
+        );
+      }
       if (showNightHours && summaryState.totalNightHours > 0.001) {
         liveMessages.push(`Recargo nocturno acumulado: ${formatHours(summaryState.totalNightHours, true)}.`);
       }
@@ -356,6 +363,9 @@ function initScheduleCalculations() {
       }
       if (summaryState.overtimeHours > 0.001) {
         conciseMessages.push(`Extras: ${formatHours(summaryState.overtimeHours, true)}.`);
+      }
+      if (summaryState.overtimeRestrictionExceeded) {
+        conciseMessages.push("Revisa restriccion medica.");
       }
       if (
         summaryState.daysOverLimit > 0
@@ -471,6 +481,7 @@ function initScheduleCalculations() {
       const manualDayAdjustment = roundHours(parseDecimal(manualDayAdjustmentInput?.value));
       const manualHourAdjustment = roundHours(parseDecimal(manualHourAdjustmentInput?.value));
       const overtimeHours = roundHours(Math.max(totalHours - effectiveWeeklyTarget, 0));
+      const overtimeRestrictionExceeded = hasOvertimeRestriction && overtimeHours > overtimeRestrictionLimit + 0.001;
       const paymentUsage = resolvePaymentUsage(
         dayStates.map((dayState) => ({
           index: dayState.dayIndex,
@@ -533,6 +544,8 @@ function initScheduleCalculations() {
       const liveMessages = buildLiveSummary({
         totalNightHours,
         overtimeHours,
+        overtimeRestrictionExceeded,
+        overtimeRestrictionLimit,
         daysOverLimit,
         specialDaysGenerated,
         paymentDaysFromHourBalance: paymentUsage.paymentDaysFromHourBalance,

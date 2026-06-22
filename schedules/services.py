@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from io import StringIO
 import re
 import unicodedata
 
@@ -10,7 +12,13 @@ from django.db.utils import OperationalError, ProgrammingError
 from legacy.services import fetch_active_staff_for_site
 from openpyxl import load_workbook
 from schedules.calendar_utils import get_special_day_label
-from schedules.models import EmployeeInitialBalance, ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
+from schedules.models import (
+    EmployeeInitialBalance,
+    EmployeeOvertimeRestriction,
+    ScheduleBalanceMovement,
+    ScheduleLine,
+    WeeklySchedule,
+)
 
 NON_WORKED_SHIFT_LABELS = {
     "",
@@ -135,6 +143,23 @@ def get_line_day_reference_hours(
     config = config or SystemConfiguration.load()
     reference_hours = line.daily_max_hours or config.default_daily_max_hours or Decimal("0.00")
     return decimal_hours(reference_hours)
+
+
+def get_active_overtime_restriction(employee_identifier: str) -> EmployeeOvertimeRestriction | None:
+    cleaned_identifier = (employee_identifier or "").strip()
+    if not cleaned_identifier:
+        return None
+    try:
+        return (
+            EmployeeOvertimeRestriction.objects.filter(
+                employee_identifier=cleaned_identifier,
+                is_active=True,
+            )
+            .only("employee_identifier", "employee_name", "max_weekly_overtime_hours")
+            .first()
+        )
+    except (ProgrammingError, OperationalError):
+        return None
 
 
 def get_selected_shift_templates(line: ScheduleLine) -> dict[str, ShiftTemplate]:
@@ -426,10 +451,57 @@ def parse_initial_balance_decimal(value: object, label: str, row_number: int) ->
         raise ValueError(f"Fila {row_number}: el valor de {label} no es numerico.")
 
 
-def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[str, object]:
+def decode_uploaded_csv(uploaded_file) -> str:
+    raw_content = uploaded_file.read()
+    try:
+        uploaded_file.seek(0)
+    except (AttributeError, OSError):
+        pass
+
+    if not raw_content:
+        raise ValueError("El archivo CSV esta vacio.")
+
+    if isinstance(raw_content, str):
+        return raw_content
+
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return raw_content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    raise ValueError("No fue posible leer el archivo CSV. Revisa la codificacion del archivo.")
+
+
+def load_initial_balance_rows(uploaded_file) -> tuple[tuple[object, ...], list[tuple[object, ...]]]:
+    file_name = (getattr(uploaded_file, "name", "") or "").strip().lower()
+    if file_name.endswith(".csv"):
+        csv_text = decode_uploaded_csv(uploaded_file)
+        sample = csv_text[:2048]
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;|\t")
+        except csv.Error:
+            dialect = csv.excel
+
+        reader = csv.reader(StringIO(csv_text), dialect)
+        rows = [
+            tuple(row)
+            for row in reader
+            if any(str(cell or "").strip() for cell in row)
+        ]
+        if not rows:
+            raise ValueError("El archivo no contiene encabezados.")
+        return tuple(rows[0]), rows[1:]
+
     workbook = load_workbook(uploaded_file, data_only=True)
     worksheet = workbook.active
     header_row = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    data_rows = list(worksheet.iter_rows(min_row=2, values_only=True))
+    return header_row, data_rows
+
+
+def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[str, object]:
+    header_row, data_rows = load_initial_balance_rows(uploaded_file)
     if not header_row:
         raise ValueError("El archivo no contiene encabezados.")
 
@@ -457,7 +529,15 @@ def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[
         (
             index
             for key, index in header_index.items()
-            if key in {"nombre", "empleado", "employee_name"}
+            if key in {
+                "nombre",
+                "nombres",
+                "empleado",
+                "employee_name",
+                "nombre_completo",
+                "nombres_apellidos",
+                "nombres_y_apellidos",
+            }
         ),
         None,
     )
@@ -470,6 +550,8 @@ def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[
                 "dias_iniciales",
                 "dias_extra",
                 "dias_extras",
+                "dias_extra_semana",
+                "dias_extras_semana",
                 "saldo_dias",
                 "saldo_inicial_dias",
                 "initial_day_balance",
@@ -486,6 +568,8 @@ def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[
                 "horas_iniciales",
                 "horas_extra",
                 "horas_extras",
+                "horas_extra_semana",
+                "horas_extras_semana",
                 "saldo_horas",
                 "saldo_inicial_horas",
                 "initial_hour_balance",
@@ -503,7 +587,7 @@ def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[
     updated_count = 0
     touched_identifiers: list[str] = []
 
-    for row_number, row in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
+    for row_number, row in enumerate(data_rows, start=2):
         identifier = str(row[identifier_index] or "").strip().upper() if identifier_index < len(row) else ""
         if not identifier:
             continue
@@ -601,6 +685,7 @@ def get_schedule_line_compact_alert_summary(
     categories: list[str] = []
     daily_limit = line.daily_max_hours or config.default_daily_max_hours
     weekly_target = line.weekly_target_hours or config.default_weekly_hours
+    overtime_restriction = get_active_overtime_restriction(line.employee_identifier)
 
     if any(
         decimal_hours(getattr(line, f"day_{index}_hours", Decimal("0.00")) or "0") > daily_limit
@@ -610,6 +695,12 @@ def get_schedule_line_compact_alert_summary(
 
     if decimal_hours(line.total_hours) > weekly_target:
         categories.append("horas semanales")
+
+    if (
+        overtime_restriction
+        and decimal_hours(line.overtime_hours) > decimal_hours(overtime_restriction.max_weekly_overtime_hours)
+    ):
+        categories.append("restriccion medica")
 
     if (
         payment_resolution["invalid_pay_day_indices"]
@@ -643,6 +734,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     total_night_bonus = Decimal("0.00")
     warnings: list[str] = []
     special_days_generated = 0
+    overtime_restriction = get_active_overtime_restriction(line.employee_identifier)
 
     for day_info in day_breakdown:
         index = int(day_info["index"])
@@ -746,6 +838,15 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
 
     if line.total_hours > weekly_target:
         warnings.append(f"Supera el objetivo semanal: {line.total_hours} h vs {weekly_target} h.")
+
+    if (
+        overtime_restriction
+        and line.overtime_hours > decimal_hours(overtime_restriction.max_weekly_overtime_hours)
+    ):
+        warnings.append(
+            "Restriccion medica: no puede superar "
+            f"{decimal_hours(overtime_restriction.max_weekly_overtime_hours)} h extra en la semana."
+        )
 
     if payment_resolution["invalid_pay_day_indices"]:
         warnings.append("Se intento aplicar pago dia sin un dia acumulado o las horas equivalentes disponibles.")

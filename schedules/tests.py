@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
@@ -12,7 +13,7 @@ from openpyxl import Workbook, load_workbook
 
 from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
 from schedules.forms import ScheduleLineForm, ScheduleLoadForm
-from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
+from schedules.models import EmployeeInitialBalance, EmployeeOvertimeRestriction, ScheduleLine, WeeklySchedule
 from schedules.services import (
     copy_schedule_template,
     get_rest_shift_label,
@@ -232,6 +233,36 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_form_rejects_weekly_overtime_over_medical_restriction(self):
+        EmployeeOvertimeRestriction.objects.create(
+            employee_identifier="141B",
+            employee_name="Empleado Restringido",
+            max_weekly_overtime_hours=Decimal("0.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="141B",
+            employee_name="Empleado Restringido",
+            weekly_target_hours=Decimal("8.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="08:00-16:00",
+                day_1_shift_1="08:00-16:00",
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertTrue(
+            any("restriccion medica" in error.lower() for error in form.non_field_errors()),
+            form.errors,
+        )
 
     def test_copy_schedule_template_brings_previous_week_turns(self):
         source_schedule = WeeklySchedule.objects.create(
@@ -959,12 +990,23 @@ class InitialBalanceUploadViewTests(TestCase):
     def build_upload_file(self):
         workbook = Workbook()
         worksheet = workbook.active
-        worksheet.append(["Cedula", "Nombre", "Dias", "Horas"])
+        worksheet.append(["Cedula", "Nombres y apellidos", "Dias extras", "Horas extras"])
         worksheet.append(["999", "Empleado Base", 1, 2.5])
         output = BytesIO()
         workbook.save(output)
         output.seek(0)
         return output
+
+    def build_csv_upload_file(self):
+        content = (
+            "Cedula,Nombres y apellidos,Dias extras,Horas extras\n"
+            "999,Empleado Base,1,2.5\n"
+        )
+        return SimpleUploadedFile(
+            "saldos_iniciales.csv",
+            content.encode("utf-8"),
+            content_type="text/csv",
+        )
 
     def test_site_user_cannot_access_initial_balance_loader(self):
         self.client.login(username="site_balances", password="secret")
@@ -1004,3 +1046,24 @@ class InitialBalanceUploadViewTests(TestCase):
         self.line.refresh_from_db()
         self.assertEqual(self.line.accrued_day_balance, Decimal("1.00"))
         self.assertEqual(self.line.accrued_hour_balance, Decimal("2.50"))
+
+    def test_admin_can_upload_initial_balances_from_csv(self):
+        recalculate_schedule_line(self.line)
+        self.line.save()
+
+        self.client.login(username="admin_balances", password="secret")
+        upload = self.build_csv_upload_file()
+
+        response = self.client.post(
+            reverse("schedules:initial-balances"),
+            {
+                "balances-file": upload,
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        balance = EmployeeInitialBalance.objects.get(employee_identifier="999")
+        self.assertEqual(balance.initial_day_balance, Decimal("1.00"))
+        self.assertEqual(balance.initial_hour_balance, Decimal("2.50"))

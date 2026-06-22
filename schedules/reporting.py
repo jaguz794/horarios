@@ -170,7 +170,7 @@ def build_initial_balance_template_response() -> HttpResponse:
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Plantilla"
-    worksheet.append(["Cedula", "Nombre", "Dias", "Horas"])
+    worksheet.append(["Cedula", "Nombres y apellidos", "Dias extras", "Horas extras"])
     worksheet.append(["1000123456", "Empleado Ejemplo", 2, 4.5])
 
     for cell in worksheet[1]:

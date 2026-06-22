@@ -202,6 +202,24 @@ class EmployeeInitialBalance(TimeStampedModel):
         return f"{self.employee_identifier} - {self.employee_name or 'Sin nombre'}"
 
 
+class EmployeeOvertimeRestriction(TimeStampedModel):
+    employee_identifier = models.CharField(max_length=30, unique=True)
+    employee_name = models.CharField(max_length=180, blank=True)
+    max_weekly_overtime_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    notes = models.CharField(max_length=220, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["employee_identifier"]
+        db_table = "restricciones_horas_extra_personal"
+        verbose_name = "Restriccion de horas extra"
+        verbose_name_plural = "Restricciones de horas extra"
+
+    def __str__(self) -> str:
+        display_name = self.employee_name or "Sin nombre"
+        return f"{self.employee_identifier} - {display_name}"
+
+
 class ScheduleBalanceMovement(TimeStampedModel):
     class MovementType(models.TextChoices):
         OVERTIME = "overtime", "Hora extra generada"

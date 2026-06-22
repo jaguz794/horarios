@@ -15,6 +15,7 @@ from legacy.services import lookup_third_party_by_identifier
 from schedules.calendar_utils import get_special_day_label
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
+    get_active_overtime_restriction,
     get_rest_shift_label,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
@@ -347,6 +348,12 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.schedule is not None and getattr(self.instance, "schedule_id", None) is None:
             self.instance.schedule = self.schedule
+        self.overtime_restriction = get_active_overtime_restriction(self.instance.employee_identifier)
+        self.overtime_restriction_limit = (
+            Decimal(str(self.overtime_restriction.max_weekly_overtime_hours))
+            if self.overtime_restriction is not None
+            else None
+        )
 
         shift_1_choices = shift_choices or build_shift_choices(second_slot=False)
         shift_2_choices = secondary_shift_choices or build_shift_choices(second_slot=True)
@@ -419,6 +426,8 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         prior_day_balance = max(self.balance_snapshot["prior_day_balance"], Decimal("0.00"))
         prior_hour_balance = max(self.balance_snapshot["prior_hour_balance"], Decimal("0.00"))
         compensation_entries: list[dict[str, Decimal | int | str]] = []
+        total_worked_hours = Decimal("0.00")
+        weekly_target_hours = Decimal(str(self.instance.weekly_target_hours or config.default_weekly_hours or "0"))
 
         for index in range(7):
             shift_1_field = f"day_{index}_shift_1"
@@ -459,6 +468,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             shift_1_hours, _ = resolve_shift_metrics(shift_1_label, config=config, shift_templates=shift_map)
             shift_2_hours, _ = resolve_shift_metrics(shift_2_label, config=config, shift_templates=shift_map)
             day_worked_hours = shift_1_hours + shift_2_hours
+            total_worked_hours += day_worked_hours
             compensation_entries[-1]["worked_hours"] = day_worked_hours
             schedule_for_day = self.instance.schedule if getattr(self.instance, "schedule_id", None) else self.schedule
             is_special_day = bool(
@@ -572,6 +582,20 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                     "El pago en dinero supera el saldo acumulado disponible hasta ese dia.",
                 )
 
+        weekly_overtime_hours = max(total_worked_hours - weekly_target_hours, Decimal("0.00"))
+        if (
+            self.overtime_restriction is not None
+            and self.overtime_restriction_limit is not None
+            and weekly_overtime_hours > self.overtime_restriction_limit
+        ):
+            employee_name = self.instance.employee_name or "Este trabajador"
+            self.add_error(
+                None,
+                f"{employee_name} tiene restriccion medica y no puede superar "
+                f"{self.overtime_restriction_limit} h extra en la semana. "
+                f"La programacion actual genera {weekly_overtime_hours} h extra.",
+            )
+
         return cleaned_data
 
 
@@ -637,8 +661,11 @@ class ScheduleSettlementForm(StyledFormMixin, forms.Form):
 
 class InitialBalanceUploadForm(StyledFormMixin, forms.Form):
     file = forms.FileField(
-        label="Archivo Excel",
-        help_text="Carga un archivo .xlsx con columnas como Cedula, Nombre, Dias y Horas.",
+        label="Archivo Excel o CSV",
+        help_text=(
+            "Carga un archivo .xlsx o .csv con columnas como Cedula, Nombres y apellidos, "
+            "Dias extras y Horas extras."
+        ),
     )
 
     def __init__(self, *args, **kwargs):
@@ -648,6 +675,6 @@ class InitialBalanceUploadForm(StyledFormMixin, forms.Form):
     def clean_file(self):
         uploaded_file = self.cleaned_data["file"]
         file_name = (uploaded_file.name or "").strip().lower()
-        if not file_name.endswith(".xlsx"):
-            raise forms.ValidationError("El cargador de saldos iniciales solo admite archivos .xlsx.")
+        if not file_name.endswith((".xlsx", ".csv")):
+            raise forms.ValidationError("El cargador de saldos iniciales solo admite archivos .xlsx o .csv.")
         return uploaded_file

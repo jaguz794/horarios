@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from schedules.models import (
     EmployeeInitialBalance,
+    EmployeeOvertimeRestriction,
     ScheduleBalanceMovement,
     ScheduleLine,
     ScheduleSettlementDocument,
@@ -86,3 +87,16 @@ class ScheduleSettlementDocumentAdmin(admin.ModelAdmin):
 class EmployeeInitialBalanceAdmin(admin.ModelAdmin):
     list_display = ("employee_identifier", "employee_name", "initial_day_balance", "initial_hour_balance", "updated_at")
     search_fields = ("employee_identifier", "employee_name")
+
+
+@admin.register(EmployeeOvertimeRestriction)
+class EmployeeOvertimeRestrictionAdmin(admin.ModelAdmin):
+    list_display = (
+        "employee_identifier",
+        "employee_name",
+        "max_weekly_overtime_hours",
+        "is_active",
+        "updated_at",
+    )
+    list_filter = ("is_active",)
+    search_fields = ("employee_identifier", "employee_name", "notes")
