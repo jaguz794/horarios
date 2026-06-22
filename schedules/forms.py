@@ -585,3 +585,21 @@ class ScheduleSettlementForm(StyledFormMixin, forms.Form):
         self.fields["site"].queryset = get_accessible_sites_queryset(user, Site.objects.filter(is_active=True))
         self.fields["site"].empty_label = "Todas"
         self.apply_style()
+
+
+class InitialBalanceUploadForm(StyledFormMixin, forms.Form):
+    file = forms.FileField(
+        label="Archivo Excel",
+        help_text="Carga un archivo .xlsx con columnas como Cedula, Nombre, Dias y Horas.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.apply_style()
+
+    def clean_file(self):
+        uploaded_file = self.cleaned_data["file"]
+        file_name = (uploaded_file.name or "").strip().lower()
+        if not file_name.endswith(".xlsx"):
+            raise forms.ValidationError("El cargador de saldos iniciales solo admite archivos .xlsx.")
+        return uploaded_file

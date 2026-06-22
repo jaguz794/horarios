@@ -8,7 +8,8 @@ from io import BytesIO
 from django.http import HttpResponse
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
 
 from core.access import get_accessible_schedules_queryset
 from schedules.models import ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
@@ -40,6 +41,154 @@ def build_excel_response(title: str, headers: list[str], rows: list[list[object]
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def excel_number(value) -> int | float:
+    decimal_value = Decimal(str(value or "0"))
+    if decimal_value == decimal_value.to_integral():
+        return int(decimal_value)
+    return float(decimal_value)
+
+
+def build_schedule_excel_response(schedule: WeeklySchedule) -> HttpResponse:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Horario"
+
+    day_columns = schedule.get_day_columns()
+    worksheet["A1"] = f"Horario de {schedule.site.name}"
+    worksheet["A2"] = f"Semana del {schedule.week_start_date:%d/%m/%Y} al {schedule.week_end_date:%d/%m/%Y}"
+    worksheet["A3"] = f"Estado: {schedule.get_status_display()}"
+    worksheet["A4"] = f"Notas: {schedule.notes or 'Sin notas'}"
+    total_columns = 3 + (len(day_columns) * 3) + 5
+    worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_columns)
+    worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_columns)
+    worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=total_columns)
+    worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=total_columns)
+
+    for cell_ref in ("A1", "A2", "A3", "A4"):
+        worksheet[cell_ref].font = Font(bold=True)
+        worksheet[cell_ref].alignment = Alignment(horizontal="left")
+
+    header_group_row = 6
+    header_detail_row = 7
+
+    worksheet.cell(row=header_group_row, column=1, value="Cedula")
+    worksheet.cell(row=header_group_row, column=2, value="Empleado")
+    worksheet.cell(row=header_group_row, column=3, value="Cargo")
+    worksheet.merge_cells(start_row=header_group_row, start_column=1, end_row=header_detail_row, end_column=1)
+    worksheet.merge_cells(start_row=header_group_row, start_column=2, end_row=header_detail_row, end_column=2)
+    worksheet.merge_cells(start_row=header_group_row, start_column=3, end_row=header_detail_row, end_column=3)
+
+    current_column = 4
+    for column in day_columns:
+        worksheet.cell(
+            row=header_group_row,
+            column=current_column,
+            value=f"{column['label']}\n{column['date']}",
+        )
+        worksheet.merge_cells(
+            start_row=header_group_row,
+            start_column=current_column,
+            end_row=header_group_row,
+            end_column=current_column + 2,
+        )
+        worksheet.cell(row=header_detail_row, column=current_column, value="Turno 1")
+        worksheet.cell(row=header_detail_row, column=current_column + 1, value="Turno 2")
+        worksheet.cell(row=header_detail_row, column=current_column + 2, value="Horas")
+        current_column += 3
+
+    summary_headers = ["Total", "Extras", "Rec. noct.", "Dias acum.", "Horas acum."]
+    for summary_header in summary_headers:
+        worksheet.cell(row=header_group_row, column=current_column, value=summary_header)
+        worksheet.merge_cells(
+            start_row=header_group_row,
+            start_column=current_column,
+            end_row=header_detail_row,
+            end_column=current_column,
+        )
+        current_column += 1
+
+    for row_number in (header_group_row, header_detail_row):
+        for cell in worksheet[row_number]:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    ordered_lines = schedule.lines.all().order_by("job_role_name", "employee_name", "employee_identifier")
+    for line in ordered_lines:
+        row = [
+            line.employee_identifier,
+            line.employee_name,
+            line.job_role_name,
+        ]
+        for index in range(7):
+            row.extend(
+                [
+                    getattr(line, f"day_{index}_shift_1", "") or "",
+                    getattr(line, f"day_{index}_shift_2", "") or "",
+                    excel_number(getattr(line, f"day_{index}_hours", Decimal("0.00"))),
+                ]
+            )
+        row.extend(
+            [
+                excel_number(line.total_hours),
+                excel_number(line.overtime_hours),
+                excel_number(line.night_bonus_hours),
+                excel_number(line.accrued_day_balance),
+                excel_number(line.accrued_hour_balance),
+            ]
+        )
+        worksheet.append(row)
+
+    for column_index, column_cells in enumerate(
+        worksheet.iter_cols(min_row=header_group_row, max_row=worksheet.max_row),
+        start=1,
+    ):
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        worksheet.column_dimensions[get_column_letter(column_index)].width = min(max(max_length + 2, 12), 26)
+
+    worksheet.freeze_panes = "D8"
+    worksheet.sheet_view.zoomScale = 85
+    worksheet.page_setup.orientation = "landscape"
+    worksheet.page_setup.fitToWidth = 1
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    filename = f"horario_{schedule.site.code}_{schedule.week_start_date:%Y%m%d}.xlsx"
+    response = HttpResponse(
+        output.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def build_initial_balance_template_response() -> HttpResponse:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Plantilla"
+    worksheet.append(["Cedula", "Nombre", "Dias", "Horas"])
+    worksheet.append(["1000123456", "Empleado Ejemplo", 2, 4.5])
+
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+
+    for column_cells in worksheet.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 24)
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    response = HttpResponse(
+        output.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = 'attachment; filename="plantilla_saldos_iniciales.xlsx"'
     return response
 
 

@@ -171,6 +171,37 @@ class ScheduleLine(TimeStampedModel):
         return [item.strip() for item in (self.pending_dates_note or "").split(",") if item.strip()]
 
 
+class EmployeeInitialBalance(TimeStampedModel):
+    employee_identifier = models.CharField(max_length=30, unique=True)
+    employee_name = models.CharField(max_length=180, blank=True)
+    initial_day_balance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    initial_hour_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
+    notes = models.CharField(max_length=220, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_initial_balances",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="updated_initial_balances",
+    )
+
+    class Meta:
+        ordering = ["employee_identifier"]
+        db_table = "saldos_iniciales_personal"
+        verbose_name = "Saldo inicial por empleado"
+        verbose_name_plural = "Saldos iniciales por empleado"
+
+    def __str__(self) -> str:
+        return f"{self.employee_identifier} - {self.employee_name or 'Sin nombre'}"
+
+
 class ScheduleBalanceMovement(TimeStampedModel):
     class MovementType(models.TextChoices):
         OVERTIME = "overtime", "Hora extra generada"

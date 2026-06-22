@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+
+{% block title %}Saldos Iniciales | Portal de Horarios{% endblock %}
+{% block page_title %}Saldos Iniciales{% endblock %}
+{% block page_subtitle %}Carga el saldo base de dias y horas extras por cedula para iniciar el control en el portal.{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Cargador de saldos iniciales</h2>
+      <p>Usa una plantilla Excel con las columnas <strong>Cedula</strong>, <strong>Nombre</strong>, <strong>Dias</strong> y <strong>Horas</strong>.</p>
+    </div>
+    <div class="header-actions">
+      <a href="{% url 'schedules:initial-balances-template' %}" class="ghost-button">Descargar plantilla</a>
+      <a href="{% url 'schedules:list' %}" class="text-link">Volver a horarios</a>
+    </div>
+  </div>
+
+  <form method="post" enctype="multipart/form-data" class="panel-subsection">
+    {% csrf_token %}
+    <div class="field-grid">
+      {% for field in form %}
+      <label class="field-group">
+        <span>{{ field.label }}</span>
+        {{ field }}
+        {% if field.help_text %}
+        <small>{{ field.help_text }}</small>
+        {% endif %}
+        {{ field.errors }}
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="primary-button">Cargar saldos iniciales</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Saldos cargados recientemente</h2>
+      <p>Referencia rapida de los ultimos saldos iniciales actualizados en el portal.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Cedula</th>
+          <th>Nombre</th>
+          <th>Dias</th>
+          <th>Horas</th>
+          <th>Actualizado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for balance in recent_balances %}
+        <tr>
+          <td>{{ balance.employee_identifier }}</td>
+          <td>{{ balance.employee_name|default:"Sin nombre" }}</td>
+          <td>{{ balance.initial_day_balance }}</td>
+          <td>{{ balance.initial_hour_balance }}</td>
+          <td>{{ balance.updated_at|date:"d/m/Y H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="5">Todavia no hay saldos iniciales cargados.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

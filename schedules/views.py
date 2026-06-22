@@ -12,6 +12,7 @@ from core.access import get_accessible_schedules_queryset, user_can_delete_sched
 from core.models import SystemConfiguration
 from schedules.forms import (
     DOCUMENT_NUMBER_PATTERN,
+    InitialBalanceUploadForm,
     ScheduleLineFormSet,
     ScheduleFilterForm,
     ScheduleLineManualAddForm,
@@ -20,9 +21,11 @@ from schedules.forms import (
     WeeklyScheduleForm,
     build_shift_choices,
 )
-from schedules.models import ScheduleLine, WeeklySchedule
+from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
+from schedules.reporting import build_initial_balance_template_response, build_schedule_excel_response
 from schedules.services import (
     build_shift_metrics_catalog,
+    import_employee_initial_balances,
     rebuild_balances_for_employees_from_week,
     save_schedule_line_with_balances,
     sync_schedule_from_legacy,
@@ -60,6 +63,7 @@ class ScheduleListView(LoginRequiredMixin, ListView):
         context["can_delete_schedules"] = user_can_delete_schedules(self.request.user)
         context["filter_form"] = getattr(self, "filter_form", self.get_filter_form())
         context["show_filters"] = user_can_manage_all_sites(self.request.user)
+        context["is_admin_scope"] = user_can_manage_all_sites(self.request.user)
         return context
 
 
@@ -336,6 +340,62 @@ class ScheduleDeleteView(LoginRequiredMixin, View):
             f"Horario eliminado: {site_name} - {week_start}. Se borraron {line_count} registros de personal.",
         )
         return redirect("schedules:list")
+
+
+class ScheduleExcelDownloadView(LoginRequiredMixin, View):
+    def get(self, request, *args, **kwargs):
+        queryset = get_accessible_schedules_queryset(
+            request.user,
+            WeeklySchedule.objects.select_related("site").prefetch_related("lines"),
+        )
+        schedule = get_object_or_404(queryset, pk=self.kwargs["pk"])
+        return build_schedule_excel_response(schedule)
+
+
+class InitialBalanceUploadView(LoginRequiredMixin, TemplateView):
+    template_name = "schedules/initial_balance_upload.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        if not user_can_manage_all_sites(request.user):
+            raise PermissionDenied("Solo administracion puede cargar saldos iniciales.")
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_form(self, data=None, files=None):
+        return InitialBalanceUploadForm(data=data, files=files, prefix="balances")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.setdefault("form", self.get_form())
+        context["recent_balances"] = EmployeeInitialBalance.objects.order_by("-updated_at", "employee_identifier")[:25]
+        return context
+
+    def post(self, request, *args, **kwargs):
+        form = self.get_form(request.POST, request.FILES)
+        if form.is_valid():
+            try:
+                result = import_employee_initial_balances(
+                    form.cleaned_data["file"],
+                    updated_by=request.user,
+                )
+            except ValueError as exc:
+                form.add_error("file", str(exc))
+            else:
+                messages.success(
+                    request,
+                    "Saldos iniciales cargados correctamente. "
+                    f"Creados: {result['created_count']}. Actualizados: {result['updated_count']}.",
+                )
+                return redirect("schedules:initial-balances")
+
+        messages.error(request, "Revisa el archivo antes de cargar los saldos iniciales.")
+        return self.render_to_response(self.get_context_data(form=form))
+
+
+class InitialBalanceTemplateDownloadView(LoginRequiredMixin, View):
+    def get(self, request, *args, **kwargs):
+        if not user_can_manage_all_sites(request.user):
+            raise PermissionDenied("Solo administracion puede descargar la plantilla de saldos iniciales.")
+        return build_initial_balance_template_response()
 
 
 class ScheduleSettlementHubView(LoginRequiredMixin, TemplateView):

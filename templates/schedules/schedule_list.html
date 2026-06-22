@@ -11,7 +11,12 @@
       <h2>Semanas registradas</h2>
       <p>Cada horario queda almacenado por sede y fecha inicial.</p>
     </div>
-    <a href="{% url 'schedules:load' %}" class="primary-button">Cargar horario</a>
+    <div class="header-actions">
+      {% if is_admin_scope %}
+      <a href="{% url 'schedules:initial-balances' %}" class="ghost-button">Cargar saldos iniciales</a>
+      {% endif %}
+      <a href="{% url 'schedules:load' %}" class="primary-button">Cargar horario</a>
+    </div>
   </div>
   {% if show_filters %}
   <form method="get" class="panel-subsection filter-form">
@@ -51,6 +56,7 @@
             <a href="{% url 'schedules:edit' schedule.pk %}" class="text-link">
               {% if schedule.is_closed %}Ver{% else %}Editar{% endif %}
             </a>
+            <a href="{% url 'schedules:excel-download' schedule.pk %}" class="text-link">Excel</a>
             {% if schedule.is_closed %}
             <a href="{% url 'schedules:settlement-download' schedule.pk %}" class="text-link">Paz y salvo</a>
             {% endif %}

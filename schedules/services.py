@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import re
+import unicodedata
 
 from core.models import JobRole, ShiftTemplate, SystemConfiguration
+from django.db.utils import OperationalError, ProgrammingError
 from legacy.services import fetch_active_staff_for_site
+from openpyxl import load_workbook
 from schedules.calendar_utils import get_special_day_label
-from schedules.models import ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
+from schedules.models import EmployeeInitialBalance, ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
 
 NON_WORKED_SHIFT_LABELS = {
     "",
@@ -335,7 +338,29 @@ def get_schedule_line_balance_snapshot(
         .first()
     )
     if previous_line is None:
-        return zero_balance
+        try:
+            initial_balance = (
+                EmployeeInitialBalance.objects.filter(employee_identifier=employee_identifier)
+                .order_by("-updated_at", "-pk")
+                .first()
+            )
+        except (ProgrammingError, OperationalError):
+            return zero_balance
+        if initial_balance is None:
+            return zero_balance
+
+        prior_day_balance = decimal_hours(initial_balance.initial_day_balance)
+        prior_hour_balance = decimal_hours(initial_balance.initial_hour_balance)
+        day_reference_hours = zero_balance["day_reference_hours"]
+        return {
+            "prior_day_balance": prior_day_balance,
+            "prior_hour_balance": prior_hour_balance,
+            "prior_total_balance": (
+                prior_hour_balance + (prior_day_balance * day_reference_hours)
+            ).quantize(TWO_DECIMALS),
+            "prior_day_equivalent_hours": (prior_day_balance * day_reference_hours).quantize(TWO_DECIMALS),
+            "day_reference_hours": day_reference_hours,
+        }
 
     prior_day_balance = decimal_hours(previous_line.accrued_day_balance)
     prior_hour_balance = decimal_hours(previous_line.accrued_hour_balance)
@@ -348,6 +373,166 @@ def get_schedule_line_balance_snapshot(
         "prior_total_balance": prior_total_balance,
         "prior_day_equivalent_hours": (prior_day_balance * day_reference_hours).quantize(TWO_DECIMALS),
         "day_reference_hours": day_reference_hours,
+    }
+
+
+def normalize_initial_balance_header(value: object) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
+    return normalized.strip("_")
+
+
+def parse_initial_balance_decimal(value: object, label: str, row_number: int) -> Decimal:
+    if value in (None, ""):
+        return Decimal("0.00")
+    try:
+        return Decimal(str(value).strip().replace(",", ".")).quantize(TWO_DECIMALS)
+    except (InvalidOperation, AttributeError, ValueError):
+        raise ValueError(f"Fila {row_number}: el valor de {label} no es numerico.")
+
+
+def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[str, object]:
+    workbook = load_workbook(uploaded_file, data_only=True)
+    worksheet = workbook.active
+    header_row = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    if not header_row:
+        raise ValueError("El archivo no contiene encabezados.")
+
+    header_index = {
+        normalize_initial_balance_header(header): index
+        for index, header in enumerate(header_row)
+        if str(header or "").strip()
+    }
+    identifier_index = next(
+        (
+            index
+            for key, index in header_index.items()
+            if key in {
+                "cedula",
+                "documento",
+                "numero_documento",
+                "numero_de_documento",
+                "identificacion",
+                "employee_identifier",
+            }
+        ),
+        None,
+    )
+    name_index = next(
+        (
+            index
+            for key, index in header_index.items()
+            if key in {"nombre", "empleado", "employee_name"}
+        ),
+        None,
+    )
+    day_index = next(
+        (
+            index
+            for key, index in header_index.items()
+            if key in {
+                "dias",
+                "dias_iniciales",
+                "dias_extra",
+                "dias_extras",
+                "saldo_dias",
+                "saldo_inicial_dias",
+                "initial_day_balance",
+            }
+        ),
+        None,
+    )
+    hour_index = next(
+        (
+            index
+            for key, index in header_index.items()
+            if key in {
+                "horas",
+                "horas_iniciales",
+                "horas_extra",
+                "horas_extras",
+                "saldo_horas",
+                "saldo_inicial_horas",
+                "initial_hour_balance",
+            }
+        ),
+        None,
+    )
+
+    if identifier_index is None:
+        raise ValueError("La plantilla debe incluir una columna de Cedula o Documento.")
+    if day_index is None and hour_index is None:
+        raise ValueError("La plantilla debe incluir al menos una columna de Dias u Horas.")
+
+    created_count = 0
+    updated_count = 0
+    touched_identifiers: list[str] = []
+
+    for row_number, row in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
+        identifier = str(row[identifier_index] or "").strip().upper() if identifier_index < len(row) else ""
+        if not identifier:
+            continue
+        employee_name = str(row[name_index] or "").strip() if name_index is not None and name_index < len(row) else ""
+        initial_day_balance = (
+            parse_initial_balance_decimal(row[day_index], "dias", row_number)
+            if day_index is not None and day_index < len(row)
+            else Decimal("0.00")
+        )
+        initial_hour_balance = (
+            parse_initial_balance_decimal(row[hour_index], "horas", row_number)
+            if hour_index is not None and hour_index < len(row)
+            else Decimal("0.00")
+        )
+
+        balance, created = EmployeeInitialBalance.objects.get_or_create(
+            employee_identifier=identifier,
+            defaults={
+                "employee_name": employee_name,
+                "initial_day_balance": initial_day_balance,
+                "initial_hour_balance": initial_hour_balance,
+                "created_by": updated_by,
+                "updated_by": updated_by,
+            },
+        )
+        if created:
+            created_count += 1
+        else:
+            balance.employee_name = employee_name or balance.employee_name
+            balance.initial_day_balance = initial_day_balance
+            balance.initial_hour_balance = initial_hour_balance
+            balance.updated_by = updated_by
+            balance.save(
+                update_fields=[
+                    "employee_name",
+                    "initial_day_balance",
+                    "initial_hour_balance",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+            updated_count += 1
+
+        touched_identifiers.append(identifier)
+
+    if touched_identifiers:
+        earliest_schedule = (
+            ScheduleLine.objects.select_related("schedule")
+            .filter(employee_identifier__in=touched_identifiers)
+            .order_by("schedule__week_start_date", "pk")
+            .first()
+        )
+        if earliest_schedule is not None:
+            rebuild_balances_for_employees_from_week(
+                earliest_schedule.schedule.week_start_date,
+                touched_identifiers,
+            )
+
+    return {
+        "created_count": created_count,
+        "updated_count": updated_count,
+        "processed_count": created_count + updated_count,
+        "touched_identifiers": touched_identifiers,
     }
 
 

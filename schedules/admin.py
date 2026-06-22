@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from schedules.models import ScheduleBalanceMovement, ScheduleLine, ScheduleSettlementDocument, WeeklySchedule
+from schedules.models import (
+    EmployeeInitialBalance,
+    ScheduleBalanceMovement,
+    ScheduleLine,
+    ScheduleSettlementDocument,
+    WeeklySchedule,
+)
 
 
 class ScheduleLineInline(admin.TabularInline):
@@ -74,3 +80,9 @@ class ScheduleSettlementDocumentAdmin(admin.ModelAdmin):
     list_display = ("schedule", "file_name", "generated_by", "updated_at")
     list_filter = ("schedule__site",)
     search_fields = ("schedule__site__name", "schedule__site__code", "file_name")
+
+
+@admin.register(EmployeeInitialBalance)
+class EmployeeInitialBalanceAdmin(admin.ModelAdmin):
+    list_display = ("employee_identifier", "employee_name", "initial_day_balance", "initial_hour_balance", "updated_at")
+    search_fields = ("employee_identifier", "employee_name")

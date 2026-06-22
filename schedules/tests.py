@@ -1,3 +1,4 @@
+from io import BytesIO
 from datetime import date, time
 from decimal import Decimal
 from unittest.mock import patch
@@ -7,10 +8,11 @@ from django.contrib.auth import get_user_model
 from django.test import Client
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from openpyxl import Workbook, load_workbook
 
 from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
 from schedules.forms import ScheduleLineForm
-from schedules.models import ScheduleLine, WeeklySchedule
+from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
 from schedules.services import (
     get_rest_shift_label,
     get_schedule_line_compact_alert_summary,
@@ -165,6 +167,27 @@ class ScheduleCalculationTests(TestCase):
 
         self.assertEqual(line.day_0_hours, Decimal("6.00"))
         self.assertEqual(line.night_bonus_hours, Decimal("5.00"))
+
+    def test_recalculate_line_uses_initial_balance_when_no_prior_week_exists(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="140",
+            employee_name="Empleado Inicial",
+            initial_day_balance=Decimal("2.00"),
+            initial_hour_balance=Decimal("3.50"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="140",
+            employee_name="Empleado Inicial",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+
+        recalculate_schedule_line(line)
+
+        self.assertEqual(line.accrued_day_balance, Decimal("2.00"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("3.50"))
+        self.assertEqual(line.accrued_total_hours_balance, Decimal("19.50"))
 
     def test_compact_alert_summary_groups_main_categories(self):
         line = ScheduleLine.objects.create(
@@ -518,6 +541,8 @@ class ScheduleDeleteViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "plain-action-button")
+        self.assertContains(response, "Excel")
+        self.assertContains(response, "Cargar saldos iniciales")
 
     def test_site_user_can_add_manual_schedule_line(self):
         self.client.login(username="operador_delete", password="secret")
@@ -780,3 +805,102 @@ class ScheduleDeleteViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(ScheduleLine.objects.filter(pk=self.line.pk).exists())
+
+    def test_schedule_excel_download_returns_spreadsheet(self):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:excel-download", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn(".xlsx", response["Content-Disposition"])
+        workbook = load_workbook(BytesIO(response.content))
+        worksheet = workbook.active
+        self.assertEqual(worksheet["A6"].value, "Cedula")
+        self.assertEqual(worksheet["D6"].value, "Domingo\n07/06/2026")
+        self.assertEqual(worksheet["D7"].value, "Turno 1")
+        self.assertEqual(worksheet["E7"].value, "Turno 2")
+        self.assertEqual(worksheet["F7"].value, "Horas")
+        self.assertEqual(worksheet["A8"].value, self.line.employee_identifier)
+
+
+class InitialBalanceUploadViewTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.site = Site.objects.create(code="007", name="JARDIN.I")
+        self.schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 10),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        self.line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="999",
+            employee_name="Empleado Base",
+            weekly_target_hours=Decimal("8.00"),
+            daily_max_hours=Decimal("8.00"),
+            day_0_shift_1="08:00-16:00",
+        )
+        self.admin_user = User.objects.create_user(username="admin_balances", password="secret")
+        admin_access = UserSiteAccess.objects.get(user=self.admin_user)
+        admin_access.role = UserSiteAccess.Role.ADMIN
+        admin_access.save()
+        self.site_user = User.objects.create_user(username="site_balances", password="secret")
+        site_access = UserSiteAccess.objects.get(user=self.site_user)
+        site_access.sites.add(self.site)
+
+    def build_upload_file(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(["Cedula", "Nombre", "Dias", "Horas"])
+        worksheet.append(["999", "Empleado Base", 1, 2.5])
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return output
+
+    def test_site_user_cannot_access_initial_balance_loader(self):
+        self.client.login(username="site_balances", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:initial-balances"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_upload_initial_balances_and_rebuild_history(self):
+        recalculate_schedule_line(self.line)
+        self.line.save()
+        self.assertEqual(self.line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(self.line.accrued_hour_balance, Decimal("0.00"))
+
+        self.client.login(username="admin_balances", password="secret")
+        upload = self.build_upload_file()
+        upload.name = "saldos_iniciales.xlsx"
+
+        response = self.client.post(
+            reverse("schedules:initial-balances"),
+            {
+                "balances-file": upload,
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        balance = EmployeeInitialBalance.objects.get(employee_identifier="999")
+        self.assertEqual(balance.initial_day_balance, Decimal("1.00"))
+        self.assertEqual(balance.initial_hour_balance, Decimal("2.50"))
+
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(self.line.accrued_hour_balance, Decimal("2.50"))
