@@ -27,6 +27,8 @@ from schedules.services import (
     build_shift_metrics_catalog,
     copy_schedule_template,
     import_employee_initial_balances,
+    is_employee_blacklisted,
+    purge_blacklisted_lines_from_schedule,
     rebuild_balances_for_employees_from_week,
     save_schedule_line_with_balances,
     sync_schedule_from_legacy,
@@ -169,10 +171,16 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
 
     def get(self, request, *args, **kwargs):
         schedule = self.get_schedule()
+        if not schedule.is_closed:
+            purge_blacklisted_lines_from_schedule(schedule)
+            schedule.refresh_from_db()
         return self.render_to_response(self.build_context(schedule))
 
     def post(self, request, *args, **kwargs):
         schedule = self.get_schedule()
+        if not schedule.is_closed:
+            purge_blacklisted_lines_from_schedule(schedule)
+            schedule.refresh_from_db()
         if schedule.is_closed:
             messages.error(request, "El horario publicado esta cerrado y ya no admite modificaciones.")
             return redirect("schedules:edit", pk=schedule.pk)
@@ -201,6 +209,11 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
                 messages.error(
                     request,
                     "Ingresa un numero de documento valido para consultar el tercero.",
+                )
+            elif is_employee_blacklisted(identifier):
+                messages.error(
+                    request,
+                    "Ese numero de documento esta bloqueado en la lista negra y no puede cargarse en horarios.",
                 )
             elif ScheduleLine.objects.filter(schedule=schedule, employee_identifier=identifier).exists():
                 messages.error(request, "Ese numero de documento ya existe en este horario.")

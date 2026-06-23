@@ -12,8 +12,15 @@ from django.urls import reverse
 from openpyxl import Workbook, load_workbook
 
 from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
+from legacy.services import OperationalStaffingRecord
 from schedules.forms import ScheduleLineForm, ScheduleLoadForm
-from schedules.models import EmployeeInitialBalance, EmployeeOvertimeRestriction, ScheduleLine, WeeklySchedule
+from schedules.models import (
+    EmployeeInitialBalance,
+    EmployeeOvertimeRestriction,
+    EmployeeScheduleBlacklist,
+    ScheduleLine,
+    WeeklySchedule,
+)
 from schedules.services import (
     copy_schedule_template,
     get_rest_shift_label,
@@ -551,6 +558,44 @@ class ScheduleCalculationTests(TestCase):
             week_start_date=self.schedule.week_start_date,
         )
 
+    @patch("schedules.services.fetch_active_staff_for_site")
+    def test_sync_schedule_excludes_blacklisted_employee(self, mock_fetch_staff):
+        EmployeeScheduleBlacklist.objects.create(
+            employee_identifier="36178712",
+            employee_name="Persona Bloqueada",
+        )
+        mock_fetch_staff.return_value = [
+            OperationalStaffingRecord(
+                employee_id="36178712",
+                employee_name="Persona Bloqueada",
+                site_code=self.site.code,
+                department_code="A1",
+                department_name="ABASTOS",
+                role_code="AUX",
+                role_name="AUXILIAR",
+            ),
+            OperationalStaffingRecord(
+                employee_id="99887766",
+                employee_name="Persona Permitida",
+                site_code=self.site.code,
+                department_code="B1",
+                department_name="CARNES",
+                role_code="CARN",
+                role_name="CARNICERO",
+            ),
+        ]
+
+        created_count, updated_count = sync_schedule_from_legacy(self.schedule)
+
+        self.assertEqual(created_count, 1)
+        self.assertEqual(updated_count, 0)
+        self.assertFalse(
+            ScheduleLine.objects.filter(schedule=self.schedule, employee_identifier="36178712").exists()
+        )
+        self.assertTrue(
+            ScheduleLine.objects.filter(schedule=self.schedule, employee_identifier="99887766").exists()
+        )
+
 
 class ScheduleDeleteViewTests(TestCase):
     def setUp(self):
@@ -727,6 +772,33 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "ya existe en este horario")
         self.assertEqual(ScheduleLine.objects.filter(schedule=self.schedule).count(), 1)
+
+    @patch("schedules.forms.lookup_third_party_by_identifier", return_value=None)
+    def test_manual_schedule_line_rejects_blacklisted_document(self, _mock_lookup):
+        EmployeeScheduleBlacklist.objects.create(
+            employee_identifier="36178712",
+            employee_name="Persona Bloqueada",
+        )
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "manual_add_submit": "1",
+                "manual-lookup_attempts": "2",
+                "manual-employee_identifier": "36178712",
+                "manual-employee_name": "Persona Bloqueada",
+                "manual-job_role": str(self.job_role.pk),
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "lista negra")
+        self.assertFalse(
+            ScheduleLine.objects.filter(schedule=self.schedule, employee_identifier="36178712").exists()
+        )
 
     def test_site_user_does_not_see_night_hours_column(self):
         self.client.login(username="operador_delete", password="secret")

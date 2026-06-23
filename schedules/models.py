@@ -212,6 +212,23 @@ class EmployeeOvertimeRestriction(TimeStampedModel):
         return f"{self.employee_identifier} - {display_name}"
 
 
+class EmployeeScheduleBlacklist(TimeStampedModel):
+    employee_identifier = models.CharField(max_length=30, unique=True)
+    employee_name = models.CharField(max_length=180, blank=True)
+    notes = models.CharField(max_length=220, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["employee_identifier"]
+        db_table = "lista_negra_horarios_personal"
+        verbose_name = "Lista negra de horarios"
+        verbose_name_plural = "Lista negra de horarios"
+
+    def __str__(self) -> str:
+        display_name = self.employee_name or "Sin nombre"
+        return f"{self.employee_identifier} - {display_name}"
+
+
 class ScheduleBalanceMovement(TimeStampedModel):
     class MovementType(models.TextChoices):
         OVERTIME = "overtime", "Hora extra generada"

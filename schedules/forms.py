@@ -16,6 +16,7 @@ from schedules.calendar_utils import get_special_day_label
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
     get_active_overtime_restriction,
+    is_employee_blacklisted,
     get_daily_overtime_hours,
     get_rest_shift_label,
     get_schedule_line_balance_snapshot,
@@ -237,6 +238,10 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
             employee_identifier=value,
         ).exists():
             raise forms.ValidationError("Ese numero de documento ya existe en este horario.")
+        if is_employee_blacklisted(value):
+            raise forms.ValidationError(
+                "Ese numero de documento esta bloqueado en la lista negra y no se puede cargar en horarios."
+            )
         return value
 
     def clean(self):

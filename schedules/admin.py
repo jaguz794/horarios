@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from schedules.models import (
     EmployeeInitialBalance,
+    EmployeeScheduleBlacklist,
     EmployeeOvertimeRestriction,
     ScheduleBalanceMovement,
     ScheduleLine,
@@ -96,6 +97,18 @@ class EmployeeOvertimeRestrictionAdmin(admin.ModelAdmin):
         "employee_name",
         "max_daily_overtime_hours",
         "max_weekly_overtime_hours",
+        "is_active",
+        "updated_at",
+    )
+    list_filter = ("is_active",)
+    search_fields = ("employee_identifier", "employee_name", "notes")
+
+
+@admin.register(EmployeeScheduleBlacklist)
+class EmployeeScheduleBlacklistAdmin(admin.ModelAdmin):
+    list_display = (
+        "employee_identifier",
+        "employee_name",
         "is_active",
         "updated_at",
     )

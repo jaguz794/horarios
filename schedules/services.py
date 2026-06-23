@@ -14,6 +14,7 @@ from openpyxl import load_workbook
 from schedules.calendar_utils import get_special_day_label
 from schedules.models import (
     EmployeeInitialBalance,
+    EmployeeScheduleBlacklist,
     EmployeeOvertimeRestriction,
     ScheduleBalanceMovement,
     ScheduleLine,
@@ -165,6 +166,33 @@ def get_active_overtime_restriction(employee_identifier: str) -> EmployeeOvertim
         )
     except (ProgrammingError, OperationalError):
         return None
+
+
+def get_blacklisted_employee_identifiers(
+    employee_identifiers: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> set[str]:
+    cleaned_identifiers = {
+        (employee_identifier or "").strip()
+        for employee_identifier in (employee_identifiers or [])
+        if (employee_identifier or "").strip()
+    }
+    if employee_identifiers is not None and not cleaned_identifiers:
+        return set()
+
+    try:
+        queryset = EmployeeScheduleBlacklist.objects.filter(is_active=True)
+        if cleaned_identifiers:
+            queryset = queryset.filter(employee_identifier__in=cleaned_identifiers)
+        return set(queryset.values_list("employee_identifier", flat=True))
+    except (ProgrammingError, OperationalError):
+        return set()
+
+
+def is_employee_blacklisted(employee_identifier: str) -> bool:
+    cleaned_identifier = (employee_identifier or "").strip()
+    if not cleaned_identifier:
+        return False
+    return cleaned_identifier in get_blacklisted_employee_identifiers([cleaned_identifier])
 
 
 def get_daily_overtime_hours(worked_hours: Decimal, day_reference_hours: Decimal) -> Decimal:
@@ -1098,19 +1126,37 @@ def rebuild_balances_for_employees_from_week(
         save_schedule_line_with_balances(line)
 
 
+def purge_blacklisted_lines_from_schedule(schedule: WeeklySchedule) -> list[str]:
+    blacklisted_identifiers = get_blacklisted_employee_identifiers(
+        schedule.lines.values_list("employee_identifier", flat=True)
+    )
+    if not blacklisted_identifiers:
+        return []
+
+    schedule.lines.filter(employee_identifier__in=blacklisted_identifiers).delete()
+    rebuild_balances_for_employees_from_week(schedule.week_start_date, list(blacklisted_identifiers))
+    return sorted(blacklisted_identifiers)
+
+
 def copy_schedule_template(source_schedule: WeeklySchedule, target_schedule: WeeklySchedule) -> tuple[int, int]:
     if source_schedule.pk == target_schedule.pk:
         return 0, 0
 
+    blacklisted_identifiers = get_blacklisted_employee_identifiers(
+        source_schedule.lines.values_list("employee_identifier", flat=True)
+    )
     source_lines = {
         (line.employee_identifier or "").strip(): line
         for line in source_schedule.lines.all()
+        if (line.employee_identifier or "").strip() not in blacklisted_identifiers
     }
     copied_count = 0
     touched_employee_identifiers: list[str] = []
 
     for line in target_schedule.lines.all():
         employee_identifier = (line.employee_identifier or "").strip()
+        if employee_identifier in blacklisted_identifiers:
+            continue
         source_line = source_lines.get(employee_identifier)
         if source_line is None:
             continue
@@ -1133,9 +1179,13 @@ def copy_schedule_template(source_schedule: WeeklySchedule, target_schedule: Wee
 
 def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
     config = SystemConfiguration.load()
+    purge_blacklisted_lines_from_schedule(schedule)
     staff = fetch_active_staff_for_site(
         schedule.site.code,
         week_start_date=schedule.week_start_date,
+    )
+    blacklisted_identifiers = get_blacklisted_employee_identifiers(
+        [employee.employee_id for employee in staff]
     )
     existing_lines = {
         line.employee_identifier: line for line in schedule.lines.all()
@@ -1145,6 +1195,8 @@ def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
     touched_employee_identifiers: list[str] = []
 
     for employee in staff:
+        if employee.employee_id in blacklisted_identifiers:
+            continue
         job_role, _ = JobRole.objects.get_or_create(
             name=employee.role_name or "SIN CARGO",
             defaults={
