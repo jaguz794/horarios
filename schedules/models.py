@@ -196,6 +196,7 @@ class EmployeeInitialBalance(TimeStampedModel):
 class EmployeeOvertimeRestriction(TimeStampedModel):
     employee_identifier = models.CharField(max_length=30, unique=True)
     employee_name = models.CharField(max_length=180, blank=True)
+    max_daily_overtime_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     max_weekly_overtime_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     notes = models.CharField(max_length=220, blank=True)
     is_active = models.BooleanField(default=True)

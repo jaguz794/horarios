@@ -244,7 +244,8 @@ function initScheduleCalculations() {
     const priorHourBalance = parseDecimal(row.dataset.priorHourBalance);
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
     const hasOvertimeRestriction = row.dataset.overtimeRestrictionActive === "true";
-    const overtimeRestrictionLimit = parseDecimal(row.dataset.overtimeRestrictionLimit);
+    const overtimeRestrictionDailyLimit = parseDecimal(row.dataset.overtimeRestrictionDailyLimit);
+    const overtimeRestrictionWeeklyLimit = parseDecimal(row.dataset.overtimeRestrictionWeeklyLimit);
     const effectiveWeeklyTarget = weeklyTarget > 0 ? weeklyTarget : defaultWeeklyHours;
     const effectiveDailyMax = dailyMax > 0 ? dailyMax : defaultDailyMax;
     const totalCell = row.querySelector("[data-total-hours]");
@@ -313,9 +314,14 @@ function initScheduleCalculations() {
       if (summaryState.overtimeHours > 0.001) {
         liveMessages.push(`Extras calculadas: ${formatHours(summaryState.overtimeHours, true)}.`);
       }
-      if (summaryState.overtimeRestrictionExceeded) {
+      if (summaryState.overtimeDailyRestrictionExceededCount > 0) {
         liveMessages.push(
-          `Restriccion medica: no puede superar ${formatHours(summaryState.overtimeRestrictionLimit, true)} extra(s) y esta semana lleva ${formatHours(summaryState.overtimeHours, true)}.`,
+          `Restriccion medica diaria: ${summaryState.overtimeDailyRestrictionExceededCount} dia(s) supera(n) ${formatHours(summaryState.overtimeRestrictionDailyLimit, true)} extra(s).`,
+        );
+      }
+      if (summaryState.overtimeWeeklyRestrictionExceeded) {
+        liveMessages.push(
+          `Restriccion medica semanal: no puede superar ${formatHours(summaryState.overtimeRestrictionWeeklyLimit, true)} extra(s) y esta semana lleva ${formatHours(summaryState.overtimeHours, true)}.`,
         );
       }
       if (showNightHours && summaryState.totalNightHours > 0.001) {
@@ -363,7 +369,7 @@ function initScheduleCalculations() {
       if (summaryState.overtimeHours > 0.001) {
         conciseMessages.push(`Extras: ${formatHours(summaryState.overtimeHours, true)}.`);
       }
-      if (summaryState.overtimeRestrictionExceeded) {
+      if (summaryState.overtimeDailyRestrictionExceededCount > 0 || summaryState.overtimeWeeklyRestrictionExceeded) {
         conciseMessages.push("Revisa restriccion medica.");
       }
       if (
@@ -391,6 +397,7 @@ function initScheduleCalculations() {
       let payMoneyOverTargetCount = 0;
       let payHoursIncompleteCount = 0;
       let invalidPositiveHoursCount = 0;
+      let overtimeDailyRestrictionExceededCount = 0;
       const dayStates = [];
 
       dayCells.forEach((dayCell) => {
@@ -419,6 +426,7 @@ function initScheduleCalculations() {
         const dailyNightHours = roundHours(shift1Metrics.night_hours + shift2Metrics.night_hours);
         const compensationHoursValue = roundHours(parseDecimal(compensationHours?.value));
         const specialGenerated = Boolean(dayCell.dataset.specialDay) && dailyHours > 0.001;
+        const dailyOvertimeHours = roundHours(Math.max(dailyHours - dayReferenceHours, 0));
 
         totalHours = roundHours(totalHours + dailyHours);
         totalNightHours = roundHours(totalNightHours + dailyNightHours);
@@ -467,12 +475,16 @@ function initScheduleCalculations() {
         if (isOverLimit) {
           daysOverLimit += 1;
         }
+        if (hasOvertimeRestriction && dailyOvertimeHours > overtimeRestrictionDailyLimit + 0.001) {
+          overtimeDailyRestrictionExceededCount += 1;
+        }
         dayStates.push({
           dayIndex,
           dayCell,
           modeValue,
           compensationHoursValue,
           dailyHours,
+          dailyOvertimeHours,
           specialGenerated,
         });
       });
@@ -480,7 +492,8 @@ function initScheduleCalculations() {
       const manualDayAdjustment = roundHours(parseDecimal(manualDayAdjustmentInput?.value));
       const manualHourAdjustment = roundHours(parseDecimal(manualHourAdjustmentInput?.value));
       const overtimeHours = roundHours(Math.max(totalHours - effectiveWeeklyTarget, 0));
-      const overtimeRestrictionExceeded = hasOvertimeRestriction && overtimeHours > overtimeRestrictionLimit + 0.001;
+      const overtimeWeeklyRestrictionExceeded =
+        hasOvertimeRestriction && overtimeHours > overtimeRestrictionWeeklyLimit + 0.001;
       const paymentUsage = resolvePaymentUsage(
         dayStates.map((dayState) => ({
           index: dayState.dayIndex,
@@ -543,8 +556,10 @@ function initScheduleCalculations() {
       const liveMessages = buildLiveSummary({
         totalNightHours,
         overtimeHours,
-        overtimeRestrictionExceeded,
-        overtimeRestrictionLimit,
+        overtimeDailyRestrictionExceededCount,
+        overtimeRestrictionDailyLimit,
+        overtimeWeeklyRestrictionExceeded,
+        overtimeRestrictionWeeklyLimit,
         daysOverLimit,
         specialDaysGenerated,
         paymentDaysFromHourBalance: paymentUsage.paymentDaysFromHourBalance,

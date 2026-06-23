@@ -231,6 +231,7 @@ class ScheduleCalculationTests(TestCase):
         EmployeeOvertimeRestriction.objects.create(
             employee_identifier="141B",
             employee_name="Empleado Restringido",
+            max_daily_overtime_hours=Decimal("8.00"),
             max_weekly_overtime_hours=Decimal("0.00"),
         )
         line = ScheduleLine.objects.create(
@@ -254,6 +255,37 @@ class ScheduleCalculationTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertTrue(
             any("restriccion medica" in error.lower() for error in form.non_field_errors()),
+            form.errors,
+        )
+
+    def test_form_rejects_daily_overtime_over_medical_restriction(self):
+        EmployeeOvertimeRestriction.objects.create(
+            employee_identifier="141C",
+            employee_name="Empleado Restringido Diario",
+            max_daily_overtime_hours=Decimal("0.00"),
+            max_weekly_overtime_hours=Decimal("20.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="141C",
+            employee_name="Empleado Restringido Diario",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="08:00-16:00",
+                day_0_shift_2="13:00-17:00",
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertTrue(
+            "restriccion medica" in form.errors["day_0_shift_2"][0].lower(),
             form.errors,
         )
 

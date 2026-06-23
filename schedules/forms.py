@@ -16,6 +16,7 @@ from schedules.calendar_utils import get_special_day_label
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
     get_active_overtime_restriction,
+    get_daily_overtime_hours,
     get_rest_shift_label,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
@@ -349,6 +350,11 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         if self.schedule is not None and getattr(self.instance, "schedule_id", None) is None:
             self.instance.schedule = self.schedule
         self.overtime_restriction = get_active_overtime_restriction(self.instance.employee_identifier)
+        self.overtime_restriction_daily_limit = (
+            Decimal(str(self.overtime_restriction.max_daily_overtime_hours))
+            if self.overtime_restriction is not None
+            else None
+        )
         self.overtime_restriction_limit = (
             Decimal(str(self.overtime_restriction.max_weekly_overtime_hours))
             if self.overtime_restriction is not None
@@ -470,6 +476,19 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             day_worked_hours = shift_1_hours + shift_2_hours
             total_worked_hours += day_worked_hours
             compensation_entries[-1]["worked_hours"] = day_worked_hours
+            if (
+                self.overtime_restriction is not None
+                and self.overtime_restriction_daily_limit is not None
+            ):
+                daily_overtime_hours = get_daily_overtime_hours(day_worked_hours, day_reference_hours)
+                if daily_overtime_hours > self.overtime_restriction_daily_limit:
+                    target_field = shift_2_field if shift_2_label else shift_1_field
+                    self.add_error(
+                        target_field,
+                        "Restriccion medica: no puede superar "
+                        f"{self.overtime_restriction_daily_limit} h extra en el dia. "
+                        f"Esta programacion genera {daily_overtime_hours} h extra.",
+                    )
             schedule_for_day = self.instance.schedule if getattr(self.instance, "schedule_id", None) else self.schedule
             is_special_day = bool(
                 schedule_for_day

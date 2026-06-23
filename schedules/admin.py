@@ -94,6 +94,7 @@ class EmployeeOvertimeRestrictionAdmin(admin.ModelAdmin):
     list_display = (
         "employee_identifier",
         "employee_name",
+        "max_daily_overtime_hours",
         "max_weekly_overtime_hours",
         "is_active",
         "updated_at",

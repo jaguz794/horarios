@@ -155,11 +155,23 @@ def get_active_overtime_restriction(employee_identifier: str) -> EmployeeOvertim
                 employee_identifier=cleaned_identifier,
                 is_active=True,
             )
-            .only("employee_identifier", "employee_name", "max_weekly_overtime_hours")
+            .only(
+                "employee_identifier",
+                "employee_name",
+                "max_daily_overtime_hours",
+                "max_weekly_overtime_hours",
+            )
             .first()
         )
     except (ProgrammingError, OperationalError):
         return None
+
+
+def get_daily_overtime_hours(worked_hours: Decimal, day_reference_hours: Decimal) -> Decimal:
+    return max(
+        decimal_hours(worked_hours) - decimal_hours(day_reference_hours),
+        Decimal("0.00"),
+    ).quantize(TWO_DECIMALS)
 
 
 def get_selected_shift_templates(line: ScheduleLine) -> dict[str, ShiftTemplate]:
@@ -686,12 +698,26 @@ def get_schedule_line_compact_alert_summary(
     daily_limit = line.daily_max_hours or config.default_daily_max_hours
     weekly_target = line.weekly_target_hours or config.default_weekly_hours
     overtime_restriction = get_active_overtime_restriction(line.employee_identifier)
+    daily_restriction_limit = (
+        decimal_hours(overtime_restriction.max_daily_overtime_hours)
+        if overtime_restriction is not None
+        else Decimal("0.00")
+    )
 
     if any(
         decimal_hours(getattr(line, f"day_{index}_hours", Decimal("0.00")) or "0") > daily_limit
         for index in range(7)
     ):
         categories.append("limites del dia")
+
+    if overtime_restriction and any(
+        get_daily_overtime_hours(
+            getattr(line, f"day_{index}_hours", Decimal("0.00")) or "0",
+            balance_snapshot["day_reference_hours"],
+        ) > daily_restriction_limit
+        for index in range(7)
+    ):
+        categories.append("restriccion medica")
 
     if decimal_hours(line.total_hours) > weekly_target:
         categories.append("horas semanales")
@@ -735,6 +761,16 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     warnings: list[str] = []
     special_days_generated = 0
     overtime_restriction = get_active_overtime_restriction(line.employee_identifier)
+    daily_restriction_limit = (
+        decimal_hours(overtime_restriction.max_daily_overtime_hours)
+        if overtime_restriction is not None
+        else Decimal("0.00")
+    )
+    weekly_restriction_limit = (
+        decimal_hours(overtime_restriction.max_weekly_overtime_hours)
+        if overtime_restriction is not None
+        else Decimal("0.00")
+    )
 
     for day_info in day_breakdown:
         index = int(day_info["index"])
@@ -746,6 +782,14 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
 
         if daily_hours > daily_limit:
             warnings.append(f"Dia {index + 1}: supera el maximo diario ({daily_hours} h).")
+
+        if overtime_restriction:
+            daily_overtime_hours = get_daily_overtime_hours(daily_hours, day_reference_hours)
+            if daily_overtime_hours > daily_restriction_limit:
+                warnings.append(
+                    f"Dia {index + 1}: restriccion medica supera el tope diario de extras "
+                    f"({daily_overtime_hours} h vs {daily_restriction_limit} h)."
+                )
 
         if daily_hours > Decimal("0.00") and day_info["special_label"]:
             special_days_generated += 1
@@ -835,11 +879,11 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
 
     if (
         overtime_restriction
-        and line.overtime_hours > decimal_hours(overtime_restriction.max_weekly_overtime_hours)
+        and line.overtime_hours > weekly_restriction_limit
     ):
         warnings.append(
             "Restriccion medica: no puede superar "
-            f"{decimal_hours(overtime_restriction.max_weekly_overtime_hours)} h extra en la semana."
+            f"{weekly_restriction_limit} h extra en la semana."
         )
 
     if payment_resolution["invalid_pay_day_indices"]:
