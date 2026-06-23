@@ -10,6 +10,19 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunSQL(
+            sql="""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.cache_personal_operativo') IS NULL
+                    AND to_regclass('public.cache_personal_operativo_id_seq') IS NOT NULL THEN
+                        DROP SEQUENCE public.cache_personal_operativo_id_seq CASCADE;
+                    END IF;
+                END
+                $$;
+            """,
+            reverse_sql=migrations.RunSQL.noop,
+        ),
         migrations.CreateModel(
             name='OperationalStaffCache',
             fields=[
