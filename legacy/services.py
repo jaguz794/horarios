@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from datetime import date
 
-from django.db import connections
+from django.db import connections, transaction
+from django.utils import timezone
 
-from core.models import Department, JobRole, Site, SystemConfiguration
+from core.models import Department, JobRole, OperationalStaffCache, Site, SystemConfiguration
 from legacy.models import LegacyCostCenter, LegacyEmployee, LegacyOperationalSite
 
 SITE_ALIAS_MAP = {
@@ -118,13 +119,85 @@ def sync_reference_catalogs() -> dict[str, int]:
     }
 
 
-def fetch_active_staff_for_site(
-    site_code: str,
-    week_start_date: date | None = None,
+def _build_operational_staff_records(
+    rows: list[tuple[str, str, str, str, str, str, str]],
+    *,
+    site_filter: set[str] | None = None,
 ) -> list[OperationalStaffingRecord]:
-    cleaned_site_code = (site_code or "").strip()
-    if not cleaned_site_code:
+    if not rows:
         return []
+
+    employee_ids = [row[1] for row in rows if row[1]]
+    employees = list(
+        LegacyEmployee.objects.using("legacy")
+        .filter(employee_id__in=employee_ids)
+        .order_by("cost_center_code", "full_name")
+    )
+    employee_map = {
+        (employee.employee_id or "").strip(): employee
+        for employee in employees
+    }
+
+    cost_center_map = {
+        item.code.strip(): (item.description or "").strip()
+        for item in LegacyCostCenter.objects.using("legacy").filter(
+            code__in={employee.cost_center_code for employee in employees if employee.cost_center_code}
+        )
+    }
+
+    staffing_records: list[OperationalStaffingRecord] = []
+    seen_employee_site_pairs: set[tuple[str, str]] = set()
+    for site_code, employee_id, names, surname_1, surname_2, role_code, role_name in rows:
+        normalized_site_code = (site_code or "").strip()
+        normalized_employee_id = (employee_id or "").strip()
+        if not normalized_site_code or not normalized_employee_id:
+            continue
+        if site_filter is not None and normalized_site_code not in site_filter:
+            continue
+        pair = (normalized_site_code, normalized_employee_id)
+        if pair in seen_employee_site_pairs:
+            continue
+        seen_employee_site_pairs.add(pair)
+        legacy_employee = employee_map.get(normalized_employee_id)
+        department_code = (legacy_employee.cost_center_code or "").strip() if legacy_employee else ""
+        staffing_records.append(
+            OperationalStaffingRecord(
+                employee_id=normalized_employee_id,
+                employee_name=compose_employee_name(
+                    names=names,
+                    surname_1=surname_1,
+                    surname_2=surname_2,
+                    fallback_name=(legacy_employee.full_name or "") if legacy_employee else "",
+                ),
+                site_code=normalized_site_code,
+                department_code=department_code,
+                department_name=cost_center_map.get(department_code, ""),
+                role_code=(role_code or "").strip() or ((legacy_employee.role_code or "").strip() if legacy_employee else ""),
+                role_name=(role_name or "").strip() or ((legacy_employee.role_name or "").strip() if legacy_employee else ""),
+            )
+        )
+
+    return sorted(
+        staffing_records,
+        key=lambda item: (
+            (item.site_code or "").casefold(),
+            (item.role_name or "ZZZ SIN CARGO").casefold(),
+            (item.employee_name or "").casefold(),
+            (item.employee_id or "").casefold(),
+        ),
+    )
+
+
+def fetch_operational_staff_from_legacy(
+    site_codes: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> list[OperationalStaffingRecord]:
+    cleaned_site_codes = sorted(
+        {
+            (site_code or "").strip()
+            for site_code in (site_codes or [])
+            if (site_code or "").strip()
+        }
+    )
 
     legacy_query = """
         SELECT DISTINCT
@@ -149,65 +222,131 @@ def fetch_active_staff_for_site(
         WHERE
             c.estado = 'A'
             AND TRIM(COALESCE(c.grupo_empleados, '')) = '02'
-            AND TRIM(c.id_co) = %s
+    """
+    params: list[str] = []
+    if cleaned_site_codes:
+        placeholders = ", ".join(["%s"] * len(cleaned_site_codes))
+        legacy_query += f"\n            AND TRIM(c.id_co) IN ({placeholders})\n"
+        params.extend(cleaned_site_codes)
+    legacy_query += """
         ORDER BY
             TRIM(c.id_co),
             TRIM(COALESCE(t.apellido1, '')),
             TRIM(COALESCE(t.nombres, ''))
     """
+
     with connections["legacy"].cursor() as cursor:
-        cursor.execute(legacy_query, [cleaned_site_code])
+        cursor.execute(legacy_query, params)
         rows = cursor.fetchall()
 
-    if not rows:
+    site_filter = set(cleaned_site_codes) if cleaned_site_codes else None
+    return _build_operational_staff_records(rows, site_filter=site_filter)
+
+
+def _build_cached_operational_staff_records(site_code: str) -> list[OperationalStaffingRecord]:
+    cached_rows = list(
+        OperationalStaffCache.objects.filter(
+            site_code=site_code,
+            is_active=True,
+        ).order_by("role_name", "employee_name", "employee_identifier")
+    )
+    return [
+        OperationalStaffingRecord(
+            employee_id=row.employee_identifier,
+            employee_name=row.employee_name,
+            site_code=row.site_code,
+            department_code=row.department_code,
+            department_name=row.department_name,
+            role_code=row.role_code,
+            role_name=row.role_name,
+        )
+        for row in cached_rows
+    ]
+
+
+def replace_operational_staff_cache(
+    records: list[OperationalStaffingRecord],
+    *,
+    target_site_codes: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> dict[str, int]:
+    cleaned_target_site_codes = sorted(
+        {
+            (site_code or "").strip()
+            for site_code in (target_site_codes or [])
+            if (site_code or "").strip()
+        }
+    )
+    sync_timestamp = timezone.now()
+    created_rows = [
+        OperationalStaffCache(
+            site_code=record.site_code,
+            employee_identifier=record.employee_id,
+            employee_name=record.employee_name,
+            department_code=record.department_code,
+            department_name=record.department_name,
+            role_code=record.role_code,
+            role_name=record.role_name,
+            is_active=True,
+            created_at=sync_timestamp,
+            updated_at=sync_timestamp,
+        )
+        for record in records
+    ]
+
+    deleted_count = 0
+    with transaction.atomic():
+        if cleaned_target_site_codes:
+            deleted_count = OperationalStaffCache.objects.filter(site_code__in=cleaned_target_site_codes).delete()[0]
+        else:
+            deleted_count = OperationalStaffCache.objects.all().delete()[0]
+        if created_rows:
+            OperationalStaffCache.objects.bulk_create(created_rows, batch_size=1000)
+
+    effective_site_codes = cleaned_target_site_codes or sorted({record.site_code for record in records})
+    return {
+        "site_count": len(effective_site_codes),
+        "record_count": len(created_rows),
+        "deleted_count": deleted_count,
+    }
+
+
+def sync_operational_staff_cache(
+    site_codes: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> dict[str, int]:
+    cleaned_site_codes = sorted(
+        {
+            (site_code or "").strip()
+            for site_code in (site_codes or [])
+            if (site_code or "").strip()
+        }
+    )
+    records = fetch_operational_staff_from_legacy(cleaned_site_codes or None)
+    return replace_operational_staff_cache(records, target_site_codes=cleaned_site_codes or None)
+
+
+def fetch_active_staff_for_site(
+    site_code: str,
+    week_start_date: date | None = None,
+) -> list[OperationalStaffingRecord]:
+    cleaned_site_code = (site_code or "").strip()
+    if not cleaned_site_code:
         return []
 
-    employee_ids = [row[1] for row in rows if row[1]]
-    employees = list(
-        LegacyEmployee.objects.using("legacy")
-        .filter(employee_id__in=employee_ids)
-        .order_by("cost_center_code", "full_name")
-    )
-    employee_map = {
-        (employee.employee_id or "").strip(): employee
-        for employee in employees
-    }
+    cached_records = _build_cached_operational_staff_records(cleaned_site_code)
+    if cached_records:
+        return cached_records
 
-    cost_center_map = {
-        item.code.strip(): (item.description or "").strip()
-        for item in LegacyCostCenter.objects.using("legacy").filter(
-            code__in={employee.cost_center_code for employee in employees if employee.cost_center_code}
-        )
-    }
-
-    staffing_records: list[OperationalStaffingRecord] = []
-    seen_employee_ids: set[str] = set()
-    for _, employee_id, names, surname_1, surname_2, role_code, role_name in rows:
-        normalized_employee_id = (employee_id or "").strip()
-        if not normalized_employee_id or normalized_employee_id in seen_employee_ids:
-            continue
-        seen_employee_ids.add(normalized_employee_id)
-        legacy_employee = employee_map.get(normalized_employee_id)
-        department_code = (legacy_employee.cost_center_code or "").strip() if legacy_employee else ""
-        staffing_records.append(
-            OperationalStaffingRecord(
-                employee_id=normalized_employee_id,
-                employee_name=compose_employee_name(
-                    names=names,
-                    surname_1=surname_1,
-                    surname_2=surname_2,
-                    fallback_name=(legacy_employee.full_name or "") if legacy_employee else "",
-                ),
-                site_code=cleaned_site_code,
-                department_code=department_code,
-                department_name=cost_center_map.get(department_code, ""),
-                role_code=(role_code or "").strip() or ((legacy_employee.role_code or "").strip() if legacy_employee else ""),
-                role_name=(role_name or "").strip() or ((legacy_employee.role_name or "").strip() if legacy_employee else ""),
-            )
-        )
+    legacy_records = [
+        record
+        for record in fetch_operational_staff_from_legacy([cleaned_site_code])
+        if record.site_code == cleaned_site_code
+    ]
+    if legacy_records:
+        replace_operational_staff_cache(legacy_records, target_site_codes=[cleaned_site_code])
+        return _build_cached_operational_staff_records(cleaned_site_code)
 
     return sorted(
-        staffing_records,
+        legacy_records,
         key=lambda item: (
             (item.role_name or "ZZZ SIN CARGO").casefold(),
             (item.employee_name or "").casefold(),

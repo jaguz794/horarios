@@ -31,6 +31,40 @@ class Site(TimeStampedModel):
         return f"{self.code} - {self.name}"
 
 
+class OperationalStaffCache(TimeStampedModel):
+    site_code = models.CharField(max_length=10)
+    employee_identifier = models.CharField(max_length=30)
+    employee_name = models.CharField(max_length=180)
+    department_code = models.CharField(max_length=20, blank=True)
+    department_name = models.CharField(max_length=120, blank=True)
+    role_code = models.CharField(max_length=20, blank=True)
+    role_name = models.CharField(max_length=180, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["site_code", "role_name", "employee_name", "employee_identifier"]
+        db_table = "cache_personal_operativo"
+        verbose_name = "Cache de personal operativo"
+        verbose_name_plural = "Cache de personal operativo"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["site_code", "employee_identifier"],
+                name="uq_cache_personal_sede_cedula",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["site_code", "is_active"], name="idx_cache_oper_sede_activa"),
+            models.Index(fields=["employee_identifier"], name="idx_cache_oper_cedula"),
+            models.Index(
+                fields=["site_code", "role_name", "employee_name"],
+                name="idx_cache_oper_sede_cargo_nom",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.site_code} - {self.employee_identifier} - {self.employee_name}"
+
+
 class UserSiteAccess(TimeStampedModel):
     class Role(models.TextChoices):
         ADMIN = "admin", "Administrador"

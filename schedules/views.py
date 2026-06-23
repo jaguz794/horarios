@@ -287,17 +287,27 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
         )
 
         if schedule_form.is_valid() and line_formset.is_valid():
+            touched_employee_ids = sorted(
+                {
+                    (form.instance.employee_identifier or "").strip()
+                    for form in line_formset.forms
+                    if form.has_changed() and (form.instance.employee_identifier or "").strip()
+                }
+            )
             with transaction.atomic():
                 updated_schedule = schedule_form.save(commit=False)
                 updated_schedule.updated_by = request.user
                 updated_schedule.save()
                 line_formset.save()
-                target_employee_ids = list(updated_schedule.lines.values_list("employee_identifier", flat=True))
-                if target_employee_ids:
-                    rebuild_balances_for_employees_from_week(updated_schedule.week_start_date, target_employee_ids)
+                if touched_employee_ids:
+                    rebuild_balances_for_employees_from_week(updated_schedule.week_start_date, touched_employee_ids)
                 updated_schedule.refresh_from_db()
                 if updated_schedule.status == WeeklySchedule.Status.PUBLISHED:
-                    generate_and_store_schedule_settlement(updated_schedule, generated_by=request.user)
+                    generate_and_store_schedule_settlement(
+                        updated_schedule,
+                        generated_by=request.user,
+                        rebuild_balances=False,
+                    )
 
             messages.success(request, "Horario actualizado correctamente.")
             return redirect("schedules:edit", pk=schedule.pk)

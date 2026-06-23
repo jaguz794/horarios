@@ -1167,7 +1167,7 @@ def copy_schedule_template(source_schedule: WeeklySchedule, target_schedule: Wee
             setattr(line, f"day_{index}_compensation_mode", "")
             setattr(line, f"day_{index}_compensation_hours", Decimal("0.00"))
 
-        save_schedule_line_with_balances(line)
+        line.save()
         copied_count += 1
         touched_employee_identifiers.append(employee_identifier)
 
@@ -1223,7 +1223,7 @@ def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
         line.job_role_name = employee.role_name
         line.weekly_target_hours = job_role.weekly_target_hours
         line.daily_max_hours = job_role.daily_max_hours
-        save_schedule_line_with_balances(line)
+        line.save()
         touched_employee_identifiers.append(line.employee_identifier)
 
     if touched_employee_identifiers:

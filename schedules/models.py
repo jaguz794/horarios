@@ -44,6 +44,9 @@ class WeeklySchedule(TimeStampedModel):
         db_table = "horarios_semanales"
         verbose_name = "Horario semanal"
         verbose_name_plural = "Horarios semanales"
+        indexes = [
+            models.Index(fields=["week_start_date"], name="idx_horarios_semana_inicio"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.site.name} - {self.week_start_date:%Y-%m-%d}"
@@ -158,6 +161,9 @@ class ScheduleLine(TimeStampedModel):
         db_table = "horarios_detalle"
         verbose_name = "Detalle de horario"
         verbose_name_plural = "Detalle de horarios"
+        indexes = [
+            models.Index(fields=["employee_identifier"], name="idx_horarios_det_cedula"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.employee_identifier} - {self.employee_name}"
@@ -269,6 +275,9 @@ class ScheduleBalanceMovement(TimeStampedModel):
         db_table = "movimientos_saldo_horario"
         verbose_name = "Movimiento de saldo"
         verbose_name_plural = "Movimientos de saldo"
+        indexes = [
+            models.Index(fields=["employee_identifier"], name="idx_mov_saldo_cedula"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.employee_identifier} - {self.get_movement_type_display()} - {self.movement_date:%Y-%m-%d}"

@@ -244,9 +244,14 @@ def get_schedule_settlement_filename(schedule: WeeklySchedule) -> str:
     return f"paz_y_salvo_{site_code}_{schedule.week_start_date:%Y%m%d}.pdf"
 
 
-def generate_and_store_schedule_settlement(schedule: WeeklySchedule, generated_by=None) -> ScheduleSettlementDocument:
+def generate_and_store_schedule_settlement(
+    schedule: WeeklySchedule,
+    generated_by=None,
+    *,
+    rebuild_balances: bool = True,
+) -> ScheduleSettlementDocument:
     employee_identifiers = list(schedule.lines.values_list("employee_identifier", flat=True))
-    if employee_identifiers:
+    if rebuild_balances and employee_identifiers:
         rebuild_balances_for_employees_from_week(schedule.week_start_date, employee_identifiers)
         schedule.refresh_from_db()
 

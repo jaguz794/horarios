@@ -4,7 +4,7 @@ from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django import forms
 from datetime import time
 
-from core.models import Department, JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
+from core.models import Department, JobRole, OperationalStaffCache, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
 
 User = get_user_model()
 
@@ -25,6 +25,14 @@ class SiteAdmin(admin.ModelAdmin):
     list_filter = ("is_active",)
     search_fields = ("code", "name")
     ordering = ("code",)
+
+
+@admin.register(OperationalStaffCache)
+class OperationalStaffCacheAdmin(admin.ModelAdmin):
+    list_display = ("site_code", "employee_identifier", "employee_name", "role_name", "is_active", "updated_at")
+    list_filter = ("site_code", "is_active")
+    search_fields = ("site_code", "employee_identifier", "employee_name", "role_name", "department_name")
+    ordering = ("site_code", "role_name", "employee_name", "employee_identifier")
 
 
 @admin.register(Department)
