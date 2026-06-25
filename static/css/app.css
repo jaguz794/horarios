@@ -30,6 +30,10 @@ body {
   color: var(--ink);
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -121,6 +125,13 @@ img {
   backdrop-filter: blur(6px);
 }
 
+.nav-link-button {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
 .nav-link:hover,
 .ghost-button:hover,
 .primary-button:hover,
@@ -179,6 +190,86 @@ img {
 .message.error {
   background: var(--error-bg);
   border-color: var(--error-line);
+}
+
+.help-modal[hidden] {
+  display: none;
+}
+
+.help-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.help-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(25, 53, 29, 0.58);
+  backdrop-filter: blur(5px);
+}
+
+.help-modal-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(980px, 100%);
+  border-radius: 28px;
+  border: 1px solid rgba(84, 112, 90, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 251, 0.98) 0%, rgba(246, 251, 229, 0.98) 100%);
+  box-shadow: 0 24px 50px rgba(25, 53, 29, 0.22);
+  overflow: hidden;
+}
+
+.help-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 16px;
+}
+
+.help-modal-header h2 {
+  margin: 0 0 6px;
+}
+
+.help-modal-header p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.help-modal-close {
+  border: 0;
+  border-radius: 14px;
+  padding: 11px 14px;
+  background: #f1f6d4;
+  color: var(--brand-green-dark);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.help-modal-body {
+  padding: 0 24px 24px;
+}
+
+.help-video-frame {
+  overflow: hidden;
+  border-radius: 22px;
+  border: 1px solid rgba(84, 112, 90, 0.14);
+  background: #0f2214;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.help-video-frame iframe {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  display: block;
 }
 
 .panel,
@@ -962,5 +1053,20 @@ textarea:focus {
 
   .multi-date-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .help-modal {
+    padding: 14px;
+  }
+
+  .help-modal-header,
+  .help-modal-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .help-modal-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

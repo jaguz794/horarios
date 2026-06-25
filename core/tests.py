@@ -114,6 +114,8 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "2 persona(s) cargadas.")
         self.assertContains(response, "2 alerta(s) en 1 colaborador(es).")
         self.assertContains(response, "Revisa horas semanales.")
+        self.assertContains(response, "Ayuda")
+        self.assertContains(response, "10vJTA2WoJ0HkF5ByLp35Gw1LKR2qs8zR/preview")
 
 
 class SiteOrderingTests(TestCase):

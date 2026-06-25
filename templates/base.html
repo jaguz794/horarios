@@ -26,6 +26,14 @@
         <a href="{% url 'schedules:list' %}" class="nav-link">Horarios</a>
         <a href="{% url 'schedules:settlement-hub' %}" class="nav-link">Paz y salvo</a>
         <a href="{% url 'reports' %}" class="nav-link">Informes</a>
+        <button
+          type="button"
+          class="nav-link nav-link-button"
+          data-help-open
+          data-help-video-url="https://drive.google.com/file/d/10vJTA2WoJ0HkF5ByLp35Gw1LKR2qs8zR/preview"
+        >
+          Ayuda
+        </button>
         {% if request.user.is_staff %}
         <a href="/admin/" class="nav-link">Administracion</a>
         {% endif %}
@@ -59,6 +67,70 @@
       {% block content %}{% endblock %}
     </main>
   </div>
+  {% if request.user.is_authenticated %}
+  <section class="help-modal" data-help-modal hidden aria-hidden="true">
+    <div class="help-modal-backdrop" data-help-close></div>
+    <div class="help-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+      <div class="help-modal-header">
+        <div>
+          <h2 id="help-modal-title">Ayuda</h2>
+          <p>Video guia del portal de horarios.</p>
+        </div>
+        <button type="button" class="help-modal-close" data-help-close aria-label="Cerrar ayuda">Cerrar</button>
+      </div>
+      <div class="help-modal-body">
+        <div class="help-video-frame">
+          <iframe
+            title="Video de ayuda del portal"
+            data-help-iframe
+            src=""
+            loading="lazy"
+            allow="autoplay; encrypted-media; picture-in-picture"
+            allowfullscreen
+            referrerpolicy="strict-origin-when-cross-origin"
+          ></iframe>
+        </div>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+  {% if request.user.is_authenticated %}
+  <script>
+    (() => {
+      const openButton = document.querySelector("[data-help-open]");
+      const modal = document.querySelector("[data-help-modal]");
+      const iframe = document.querySelector("[data-help-iframe]");
+      const closeButtons = document.querySelectorAll("[data-help-close]");
+      if (!openButton || !modal || !iframe) {
+        return;
+      }
+
+      const videoUrl = openButton.dataset.helpVideoUrl || "";
+
+      const closeModal = () => {
+        modal.hidden = true;
+        modal.setAttribute("aria-hidden", "true");
+        document.body.classList.remove("modal-open");
+        iframe.src = "";
+      };
+
+      const openModal = () => {
+        modal.hidden = false;
+        modal.setAttribute("aria-hidden", "false");
+        document.body.classList.add("modal-open");
+        iframe.src = videoUrl;
+      };
+
+      openButton.addEventListener("click", openModal);
+      closeButtons.forEach((button) => button.addEventListener("click", closeModal));
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !modal.hidden) {
+          closeModal();
+        }
+      });
+    })();
+  </script>
+  {% endif %}
   {% block extra_scripts %}{% endblock %}
 </body>
 </html>

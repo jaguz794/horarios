@@ -3,6 +3,23 @@
 from django.db import migrations, models
 
 
+def drop_orphaned_operational_staff_sequence(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute(
+        """
+            DO $$
+            BEGIN
+                IF to_regclass('public.cache_personal_operativo') IS NULL
+                AND to_regclass('public.cache_personal_operativo_id_seq') IS NOT NULL THEN
+                    DROP SEQUENCE public.cache_personal_operativo_id_seq CASCADE;
+                END IF;
+            END
+            $$;
+        """
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,18 +27,9 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql="""
-                DO $$
-                BEGIN
-                    IF to_regclass('public.cache_personal_operativo') IS NULL
-                    AND to_regclass('public.cache_personal_operativo_id_seq') IS NOT NULL THEN
-                        DROP SEQUENCE public.cache_personal_operativo_id_seq CASCADE;
-                    END IF;
-                END
-                $$;
-            """,
-            reverse_sql=migrations.RunSQL.noop,
+        migrations.RunPython(
+            drop_orphaned_operational_staff_sequence,
+            reverse_code=migrations.RunPython.noop,
         ),
         migrations.CreateModel(
             name='OperationalStaffCache',
