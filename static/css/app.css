@@ -591,6 +591,14 @@ img {
   margin-bottom: 18px;
 }
 
+.schedule-filter-grid {
+  align-items: end;
+}
+
+.schedule-role-filter {
+  max-width: 320px;
+}
+
 .field-group {
   display: grid;
   gap: 8px;

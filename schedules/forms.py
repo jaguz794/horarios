@@ -373,8 +373,25 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             ScheduleLine.CompensationMode.PAY_DAY,
             ScheduleLine.CompensationMode.PAY_HOURS,
         ]
+        selected_compensation_modes = {
+            str(
+                (
+                    self.data.get(self.add_prefix(field_name))
+                    if self.is_bound
+                    else getattr(self.instance, field_name, "") or ""
+                )
+            ).strip()
+            for field_name in self.COMPENSATION_MODE_FIELDS
+        }
         if self.allow_money_payment:
-            payment_choices.append(ScheduleLine.CompensationMode.PAY_MONEY)
+            payment_choices.extend(
+                [
+                    ScheduleLine.CompensationMode.PAY_MONEY_DAY,
+                    ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+                ]
+            )
+            if ScheduleLine.CompensationMode.PAY_MONEY in selected_compensation_modes:
+                payment_choices.append(ScheduleLine.CompensationMode.PAY_MONEY)
         payment_choices_render = [(value, label) for value, label in ScheduleLine.CompensationMode.choices if value in payment_choices]
 
         for field_name in self.SHIFT_1_FIELDS:
@@ -464,11 +481,18 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             elif compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
                 if compensation_hours <= Decimal("0.00"):
                     self.add_error(compensation_hours_field, "Pago horas requiere una cantidad mayor que cero.")
-            elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY:
+            elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY_DAY:
+                if not self.allow_money_payment:
+                    self.add_error(compensation_mode_field, "Pago en dinero solo esta disponible para el perfil administrador.")
+                cleaned_data[compensation_hours_field] = Decimal("0.00")
+            elif compensation_mode in {
+                ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+                ScheduleLine.CompensationMode.PAY_MONEY,
+            }:
                 if not self.allow_money_payment:
                     self.add_error(compensation_mode_field, "Pago en dinero solo esta disponible para el perfil administrador.")
                 if compensation_hours <= Decimal("0.00"):
-                    self.add_error(compensation_hours_field, "Pago en dinero requiere una cantidad mayor que cero.")
+                    self.add_error(compensation_hours_field, "Pago en dinero por horas requiere una cantidad mayor que cero.")
             else:
                 cleaned_data[compensation_hours_field] = Decimal("0.00")
 
@@ -520,12 +544,15 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                         "El pago por horas supera las horas necesarias para completar la jornada del dia.",
                     )
             elif (
-                compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY
+                compensation_mode in {
+                    ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+                    ScheduleLine.CompensationMode.PAY_MONEY,
+                }
                 and compensation_hours > day_reference_hours
             ):
                 self.add_error(
                     compensation_hours_field,
-                    "El pago en dinero no puede descontar mas de la jornada diaria en un mismo dia.",
+                    "El pago en dinero por horas no puede descontar mas de la jornada diaria en un mismo dia.",
                 )
 
             if not shift_1 or not shift_2:
@@ -587,7 +614,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         for index in payment_resolution["invalid_pay_day_indices"]:
             self.add_error(
                 f"day_{index}_compensation_mode",
-                f"Pago dia requiere 1 dia acumulado o {day_reference_hours} h acumuladas disponibles hasta ese dia.",
+                "Pago dia requiere 1 dia acumulado disponible hasta ese dia.",
             )
 
         for index in payment_resolution["invalid_pay_hours_indices"]:
@@ -603,8 +630,14 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             if compensation_hours > Decimal("0.00"):
                 self.add_error(
                     f"day_{index}_compensation_hours",
-                    "El pago en dinero supera el saldo acumulado disponible hasta ese dia.",
+                    "El pago en dinero por horas supera el saldo acumulado disponible hasta ese dia.",
                 )
+
+        for index in payment_resolution["invalid_pay_money_day_indices"]:
+            self.add_error(
+                f"day_{index}_compensation_mode",
+                "Pago en dinero por dia requiere 1 dia acumulado disponible hasta ese dia.",
+            )
 
         weekly_overtime_hours = max(total_worked_hours - weekly_target_hours, Decimal("0.00"))
         if (

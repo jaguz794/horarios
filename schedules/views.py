@@ -331,6 +331,14 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             instance=schedule,
             form_kwargs=self.get_line_form_kwargs(schedule, readonly=schedule_closed),
         )
+        role_filter_options = sorted(
+            {
+                (line_form.instance.job_role_name or "").strip()
+                for line_form in line_formset.forms
+                if (line_form.instance.job_role_name or "").strip()
+            },
+            key=str.casefold,
+        )
         return {
             "schedule": schedule,
             "schedule_form": schedule_form,
@@ -345,6 +353,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             "show_admin_balance_controls": is_admin_scope,
             "allow_money_payment": is_admin_scope,
             "manual_add_open": manual_add_form.is_bound,
+            "role_filter_options": role_filter_options,
             "schedule_closed": schedule_closed,
         }
 

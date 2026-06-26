@@ -259,7 +259,15 @@ def build_overtime_balance_report_rows(user, date_from: date, date_to: date, sit
             movement_date__lte=date_to,
             equivalent_hours__gt=0,
         )
-        .exclude(movement_type__in=[ScheduleBalanceMovement.MovementType.PAY_DAY, ScheduleBalanceMovement.MovementType.PAY_HOURS, ScheduleBalanceMovement.MovementType.PAY_MONEY])
+        .exclude(
+            movement_type__in=[
+                ScheduleBalanceMovement.MovementType.PAY_DAY,
+                ScheduleBalanceMovement.MovementType.PAY_HOURS,
+                ScheduleBalanceMovement.MovementType.PAY_MONEY_DAY,
+                ScheduleBalanceMovement.MovementType.PAY_MONEY_HOURS,
+                ScheduleBalanceMovement.MovementType.PAY_MONEY,
+            ]
+        )
         .order_by("movement_date", "site__code", "employee_name")
     )
     if site is not None:

@@ -77,6 +77,20 @@
       {% endfor %}
     </div>
 
+    {% if role_filter_options %}
+    <div class="field-grid compact-grid schedule-filter-grid">
+      <label class="field-group schedule-role-filter">
+        <span>Filtrar por cargo</span>
+        <select class="input" data-role-filter>
+          <option value="">Todos los cargos</option>
+          {% for role_name in role_filter_options %}
+          <option value="{{ role_name }}">{{ role_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    {% endif %}
+
     <div class="table-wrap wide-wrap schedule-grid-wrap">
       <table
         class="schedule-table"
@@ -151,6 +165,7 @@
           {% for line_form in line_formset %}
           <tr
             class="schedule-row"
+            data-role-name="{{ line_form.instance.job_role_name|default:'' }}"
             data-weekly-target="{{ line_form.instance.weekly_target_hours }}"
             data-daily-max="{{ line_form.instance.daily_max_hours }}"
             data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance }}"

@@ -8,6 +8,7 @@ import re
 import unicodedata
 
 from core.models import JobRole, ShiftTemplate, SystemConfiguration
+from django.db.models import Q
 from django.db.utils import OperationalError, ProgrammingError
 from legacy.services import fetch_active_staff_for_site
 from openpyxl import load_workbook
@@ -34,6 +35,14 @@ NON_WORKED_SHIFT_LABELS = {
 REST_SHIFT_LABEL = "descanso"
 SHIFT_PATTERN = re.compile(r"^(?P<start>\d{1,2}:\d{2})-(?P<end>\d{1,2}:\d{2})$")
 TWO_DECIMALS = Decimal("0.01")
+
+MONEY_HOUR_COMPENSATION_MODES = {
+    ScheduleLine.CompensationMode.PAY_MONEY,
+    ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+}
+MONEY_DAY_COMPENSATION_MODES = {
+    ScheduleLine.CompensationMode.PAY_MONEY_DAY,
+}
 
 
 def normalize_shift_label(value: str) -> str:
@@ -277,20 +286,19 @@ def resolve_compensation_usage(
 ) -> dict[str, Decimal | int | list[int] | dict[int, dict[str, Decimal | str | bool]]]:
     remaining_day_balance = max(decimal_hours(available_day_balance), Decimal("0.00"))
     remaining_hour_balance = max(decimal_hours(available_hour_balance), Decimal("0.00"))
-    day_reference_hours = max(decimal_hours(day_reference_hours), Decimal("0.00"))
     weekly_target_hours = max(decimal_hours(weekly_target_hours or "0"), Decimal("0.00"))
     cumulative_worked_hours = Decimal("0.00")
     cumulative_overtime_hours = Decimal("0.00")
 
     payment_days_used = 0
     payment_days_from_day_balance = 0
-    payment_days_from_hour_balance = 0
     uncovered_payment_days = 0
-    payment_day_hour_equivalent = Decimal("0.00")
+    money_payment_days_used = 0
     payment_hours_used = Decimal("0.00")
     money_payment_hours_used = Decimal("0.00")
     invalid_pay_day_indices: list[int] = []
     invalid_pay_hours_indices: list[int] = []
+    invalid_pay_money_day_indices: list[int] = []
     invalid_pay_money_indices: list[int] = []
     day_states: dict[int, dict[str, Decimal | str | bool]] = {}
 
@@ -319,14 +327,18 @@ def resolve_compensation_usage(
                 remaining_day_balance = (remaining_day_balance - Decimal("1.00")).quantize(TWO_DECIMALS)
                 payment_days_from_day_balance += 1
                 day_state["source"] = "day_balance"
-            elif day_reference_hours > Decimal("0.00") and remaining_hour_balance >= day_reference_hours:
-                remaining_hour_balance = (remaining_hour_balance - day_reference_hours).quantize(TWO_DECIMALS)
-                payment_days_from_hour_balance += 1
-                payment_day_hour_equivalent += day_reference_hours
-                day_state["source"] = "hour_balance"
             else:
                 uncovered_payment_days += 1
                 invalid_pay_day_indices.append(index)
+                day_state["source"] = "insufficient"
+                day_state["valid"] = False
+        elif compensation_mode in MONEY_DAY_COMPENSATION_MODES:
+            money_payment_days_used += 1
+            if remaining_day_balance >= Decimal("1.00"):
+                remaining_day_balance = (remaining_day_balance - Decimal("1.00")).quantize(TWO_DECIMALS)
+                day_state["source"] = "day_balance"
+            else:
+                invalid_pay_money_day_indices.append(index)
                 day_state["source"] = "insufficient"
                 day_state["valid"] = False
         elif compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
@@ -337,7 +349,7 @@ def resolve_compensation_usage(
                 invalid_pay_hours_indices.append(index)
                 day_state["valid"] = False
             day_state["source"] = "hour_balance"
-        elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY:
+        elif compensation_mode in MONEY_HOUR_COMPENSATION_MODES:
             money_payment_hours_used += compensation_hours
             remaining_before = remaining_hour_balance
             remaining_hour_balance = (remaining_hour_balance - compensation_hours).quantize(TWO_DECIMALS)
@@ -369,13 +381,15 @@ def resolve_compensation_usage(
     return {
         "payment_days_used": payment_days_used,
         "payment_days_from_day_balance": payment_days_from_day_balance,
-        "payment_days_from_hour_balance": payment_days_from_hour_balance,
+        "payment_days_from_hour_balance": 0,
         "uncovered_payment_days": uncovered_payment_days,
-        "payment_day_hour_equivalent": payment_day_hour_equivalent.quantize(TWO_DECIMALS),
+        "money_payment_days_used": money_payment_days_used,
+        "payment_day_hour_equivalent": Decimal("0.00"),
         "payment_hours_used": payment_hours_used.quantize(TWO_DECIMALS),
         "money_payment_hours_used": money_payment_hours_used.quantize(TWO_DECIMALS),
         "invalid_pay_day_indices": invalid_pay_day_indices,
         "invalid_pay_hours_indices": invalid_pay_hours_indices,
+        "invalid_pay_money_day_indices": invalid_pay_money_day_indices,
         "invalid_pay_money_indices": invalid_pay_money_indices,
         "remaining_day_balance": remaining_day_balance.quantize(TWO_DECIMALS),
         "remaining_hour_balance": remaining_hour_balance.quantize(TWO_DECIMALS),
@@ -383,9 +397,10 @@ def resolve_compensation_usage(
     }
 
 
-def summarize_line_payments(line: ScheduleLine) -> tuple[int, Decimal, Decimal]:
+def summarize_line_payments(line: ScheduleLine) -> tuple[int, Decimal, int, Decimal]:
     payment_days_used = 0
     payment_hours_used = Decimal("0.00")
+    money_payment_days_used = 0
     money_payment_hours_used = Decimal("0.00")
 
     for index in range(7):
@@ -398,12 +413,15 @@ def summarize_line_payments(line: ScheduleLine) -> tuple[int, Decimal, Decimal]:
             payment_days_used += 1
         elif compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
             payment_hours_used += compensation_hours
-        elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY:
+        elif compensation_mode in MONEY_DAY_COMPENSATION_MODES:
+            money_payment_days_used += 1
+        elif compensation_mode in MONEY_HOUR_COMPENSATION_MODES:
             money_payment_hours_used += compensation_hours
 
     return (
         payment_days_used,
         payment_hours_used.quantize(TWO_DECIMALS),
+        money_payment_days_used,
         money_payment_hours_used.quantize(TWO_DECIMALS),
     )
 
@@ -426,14 +444,26 @@ def get_schedule_line_balance_snapshot(
     if not employee_identifier or schedule is None or not schedule.week_start_date:
         return zero_balance
 
+    previous_schedule_filter = Q(schedule__week_start_date__lt=schedule.week_start_date)
+    if schedule.pk:
+        previous_schedule_filter |= Q(
+            schedule__week_start_date=schedule.week_start_date,
+            schedule__created_at__lt=schedule.created_at,
+        )
+        previous_schedule_filter |= Q(
+            schedule__week_start_date=schedule.week_start_date,
+            schedule__created_at=schedule.created_at,
+            schedule__pk__lt=schedule.pk,
+        )
+
     previous_line = (
         ScheduleLine.objects.filter(
+            previous_schedule_filter,
             employee_identifier=employee_identifier,
-            schedule__week_start_date__lt=schedule.week_start_date,
         )
         .exclude(pk=getattr(line, "pk", None))
         .select_related("schedule")
-        .order_by("-schedule__week_start_date", "-pk")
+        .order_by("-schedule__week_start_date", "-schedule__created_at", "-schedule__pk", "-pk")
         .first()
     )
     if previous_line is None:
@@ -759,6 +789,7 @@ def get_schedule_line_compact_alert_summary(
     if (
         payment_resolution["invalid_pay_day_indices"]
         or payment_resolution["invalid_pay_hours_indices"]
+        or payment_resolution["invalid_pay_money_day_indices"]
         or payment_resolution["invalid_pay_money_indices"]
     ):
         categories.append("saldo previo")
@@ -833,8 +864,10 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
                 warnings.append(f"Dia {index + 1}: la jornada ya esta completa y no requiere pago horas.")
             elif compensated_day_hours > day_reference_hours:
                 warnings.append(f"Dia {index + 1}: pago horas supera la jornada del dia.")
-        elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY and compensation_hours <= Decimal("0.00"):
-            warnings.append(f"Dia {index + 1}: pago en dinero requiere una cantidad mayor que cero.")
+        elif compensation_mode in MONEY_DAY_COMPENSATION_MODES:
+            continue
+        elif compensation_mode in MONEY_HOUR_COMPENSATION_MODES and compensation_hours <= Decimal("0.00"):
+            warnings.append(f"Dia {index + 1}: pago en dinero por horas requiere una cantidad mayor que cero.")
 
     line.total_hours = total_hours.quantize(TWO_DECIMALS)
     line.overtime_hours = max(line.total_hours - weekly_target, Decimal("0.00")).quantize(TWO_DECIMALS)
@@ -843,6 +876,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     (
         line.payment_days_used,
         line.payment_hours_used,
+        line.money_payment_days_used,
         line.money_payment_hours_used,
     ) = summarize_line_payments(line)
 
@@ -870,18 +904,17 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         weekly_target_hours=weekly_target,
     )
     payment_days = Decimal(str(line.payment_days_used or 0))
-    payment_days_from_hour_balance = Decimal(str(payment_resolution["payment_days_from_hour_balance"]))
+    money_payment_days = Decimal(str(line.money_payment_days_used or 0))
     uncovered_payment_days = Decimal(str(payment_resolution["uncovered_payment_days"]))
     payment_hours = decimal_hours(payment_resolution["payment_hours_used"])
     money_payment_hours = decimal_hours(payment_resolution["money_payment_hours_used"])
-    payment_day_hour_equivalent = decimal_hours(payment_resolution["payment_day_hour_equivalent"])
 
     line.accrued_day_balance = (
         prior_day_balance
         + Decimal(str(special_days_generated))
         + manual_day_adjustment
         - payment_days
-        + payment_days_from_hour_balance
+        - money_payment_days
     ).quantize(TWO_DECIMALS)
     line.accrued_hour_balance = (
         prior_hour_balance
@@ -889,7 +922,6 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         + manual_hour_adjustment
         - payment_hours
         - money_payment_hours
-        - payment_day_hour_equivalent
     ).quantize(TWO_DECIMALS)
     line.accrued_total_hours_balance = (
         prior_total_balance
@@ -898,6 +930,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         + line.overtime_hours
         + manual_hour_adjustment
         - (payment_days * day_reference_hours)
+        - (money_payment_days * day_reference_hours)
         - payment_hours
         - money_payment_hours
     ).quantize(TWO_DECIMALS)
@@ -915,7 +948,10 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         )
 
     if payment_resolution["invalid_pay_day_indices"]:
-        warnings.append("Se intento aplicar pago dia sin un dia acumulado o las horas equivalentes disponibles.")
+        warnings.append("Se intento aplicar pago dia sin un dia acumulado disponible.")
+
+    if payment_resolution["invalid_pay_money_day_indices"]:
+        warnings.append("Se intento aplicar pago en dinero por dia sin un dia acumulado disponible.")
 
     if payment_resolution["invalid_pay_hours_indices"] or payment_resolution["invalid_pay_money_indices"]:
         warnings.append("Las horas descontadas superan el saldo acumulado disponible.")
@@ -987,8 +1023,6 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
             )
 
         if compensation_mode == ScheduleLine.CompensationMode.PAY_DAY:
-            day_state = payment_resolution["day_states"].get(int(day_info["index"]), {})
-            source = day_state.get("source")
             movements.append(
                 ScheduleBalanceMovement(
                     schedule=line.schedule,
@@ -999,14 +1033,10 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
                     job_role_name=line.job_role_name,
                     movement_date=day_date,
                     movement_type=ScheduleBalanceMovement.MovementType.PAY_DAY,
-                    quantity_days=Decimal("-1.00") if source != "hour_balance" else Decimal("0.00"),
-                    quantity_hours=(day_reference_hours * Decimal("-1.00")).quantize(TWO_DECIMALS)
-                    if source == "hour_balance"
-                    else Decimal("0.00"),
+                    quantity_days=Decimal("-1.00"),
+                    quantity_hours=Decimal("0.00"),
                     equivalent_hours=(day_reference_hours * Decimal("-1.00")).quantize(TWO_DECIMALS),
-                    description="Pago con descanso"
-                    if source != "hour_balance"
-                    else "Pago con descanso (descuenta horas acumuladas)",
+                    description="Pago con descanso",
                 )
             )
         elif compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS and compensation_hours != Decimal("0.00"):
@@ -1026,7 +1056,7 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
                     description="Pago con horas",
                 )
             )
-        elif compensation_mode == ScheduleLine.CompensationMode.PAY_MONEY and compensation_hours != Decimal("0.00"):
+        elif compensation_mode in MONEY_DAY_COMPENSATION_MODES:
             movements.append(
                 ScheduleBalanceMovement(
                     schedule=line.schedule,
@@ -1036,11 +1066,28 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
                     employee_name=line.employee_name,
                     job_role_name=line.job_role_name,
                     movement_date=day_date,
-                    movement_type=ScheduleBalanceMovement.MovementType.PAY_MONEY,
+                    movement_type=ScheduleBalanceMovement.MovementType.PAY_MONEY_DAY,
+                    quantity_days=Decimal("-1.00"),
+                    quantity_hours=Decimal("0.00"),
+                    equivalent_hours=(day_reference_hours * Decimal("-1.00")).quantize(TWO_DECIMALS),
+                    description="Pago en dinero por dia",
+                )
+            )
+        elif compensation_mode in MONEY_HOUR_COMPENSATION_MODES and compensation_hours != Decimal("0.00"):
+            movements.append(
+                ScheduleBalanceMovement(
+                    schedule=line.schedule,
+                    line=line,
+                    site=line.schedule.site,
+                    employee_identifier=line.employee_identifier,
+                    employee_name=line.employee_name,
+                    job_role_name=line.job_role_name,
+                    movement_date=day_date,
+                    movement_type=ScheduleBalanceMovement.MovementType.PAY_MONEY_HOURS,
                     quantity_days=Decimal("0.00"),
                     quantity_hours=(compensation_hours * Decimal("-1.00")).quantize(TWO_DECIMALS),
                     equivalent_hours=(compensation_hours * Decimal("-1.00")).quantize(TWO_DECIMALS),
-                    description="Pago en dinero",
+                    description="Pago en dinero por horas",
                 )
             )
 
@@ -1122,7 +1169,7 @@ def rebuild_balances_for_employees_from_week(
     if employee_identifiers:
         queryset = queryset.filter(employee_identifier__in=set(employee_identifiers))
 
-    for line in queryset.order_by("schedule__week_start_date", "schedule__site__code", "pk"):
+    for line in queryset.order_by("schedule__week_start_date", "schedule__created_at", "schedule__pk", "pk"):
         save_schedule_line_with_balances(line)
 
 

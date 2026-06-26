@@ -26,6 +26,8 @@ class ScheduleLineInline(admin.TabularInline):
         "special_days_generated",
         "accrued_day_balance",
         "accrued_hour_balance",
+        "money_payment_days_used",
+        "money_payment_hours_used",
         "warnings_count",
     )
     readonly_fields = fields
@@ -55,6 +57,8 @@ class ScheduleLineAdmin(admin.ModelAdmin):
         "special_days_generated",
         "accrued_day_balance",
         "accrued_hour_balance",
+        "money_payment_days_used",
+        "money_payment_hours_used",
         "warnings_count",
     )
     list_filter = ("schedule__site",)

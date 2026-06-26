@@ -91,7 +91,9 @@ class ScheduleLine(TimeStampedModel):
         NONE = "", "Sin pago"
         PAY_DAY = "pay_day", "Pago dia"
         PAY_HOURS = "pay_hours", "Pago horas"
-        PAY_MONEY = "pay_money", "Pago dinero"
+        PAY_MONEY_DAY = "pay_money_day", "Pago dinero dia"
+        PAY_MONEY_HOURS = "pay_money_hours", "Pago dinero horas"
+        PAY_MONEY = "pay_money", "Pago dinero horas (anterior)"
 
     schedule = models.ForeignKey(WeeklySchedule, on_delete=models.CASCADE, related_name="lines")
     employee_document_type = models.CharField(max_length=20, blank=True)
@@ -148,6 +150,7 @@ class ScheduleLine(TimeStampedModel):
     manual_hour_adjustment = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     payment_days_used = models.PositiveSmallIntegerField(default=0)
     payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    money_payment_days_used = models.PositiveSmallIntegerField(default=0)
     money_payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     accrued_day_balance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     accrued_hour_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
@@ -243,7 +246,9 @@ class ScheduleBalanceMovement(TimeStampedModel):
         MANUAL_HOUR = "manual_hour", "Ajuste manual de horas"
         PAY_DAY = "pay_day", "Pago con descanso"
         PAY_HOURS = "pay_hours", "Pago con horas"
-        PAY_MONEY = "pay_money", "Pago en dinero"
+        PAY_MONEY_DAY = "pay_money_day", "Pago en dinero por dia"
+        PAY_MONEY_HOURS = "pay_money_hours", "Pago en dinero por horas"
+        PAY_MONEY = "pay_money", "Pago en dinero (anterior)"
 
     schedule = models.ForeignKey(
         WeeklySchedule,
