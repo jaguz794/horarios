@@ -8,7 +8,6 @@ import re
 import unicodedata
 
 from core.models import JobRole, ShiftTemplate, SystemConfiguration
-from django.db.models import Q
 from django.db.utils import OperationalError, ProgrammingError
 from legacy.services import fetch_active_staff_for_site
 from openpyxl import load_workbook
@@ -276,6 +275,41 @@ def schedule_day_is_special(line: ScheduleLine, index: int) -> bool:
     return bool(get_special_day_label(day_date))
 
 
+def get_schedule_line_activity_indices(line: ScheduleLine) -> list[int]:
+    activity_indices: list[int] = []
+    for index in range(7):
+        shift_1_label = normalize_shift_label(getattr(line, f"day_{index}_shift_1", "") or "")
+        shift_2_label = normalize_shift_label(getattr(line, f"day_{index}_shift_2", "") or "")
+        compensation_mode = str(getattr(line, f"day_{index}_compensation_mode", "") or "").strip()
+        compensation_hours = decimal_hours(
+            getattr(line, f"day_{index}_compensation_hours", Decimal("0.00")) or "0"
+        )
+        if shift_1_label or shift_2_label or compensation_mode or compensation_hours != Decimal("0.00"):
+            activity_indices.append(index)
+    return activity_indices
+
+
+def get_schedule_line_progression_key(line: ScheduleLine) -> tuple[date, int, int, datetime, int, int]:
+    schedule = getattr(line, "schedule", None)
+    week_start = getattr(schedule, "week_start_date", None) or date.min
+    schedule_created_at = getattr(schedule, "created_at", None) or datetime.min
+    activity_indices = get_schedule_line_activity_indices(line)
+    if activity_indices:
+        first_activity_index = activity_indices[0]
+        last_activity_index = activity_indices[-1]
+    else:
+        first_activity_index = 7
+        last_activity_index = 7
+    return (
+        week_start,
+        first_activity_index,
+        last_activity_index,
+        schedule_created_at,
+        getattr(schedule, "pk", 0) or 0,
+        getattr(line, "pk", 0) or 0,
+    )
+
+
 def resolve_compensation_usage(
     compensation_entries: list[dict[str, Decimal | int | str]],
     *,
@@ -444,28 +478,25 @@ def get_schedule_line_balance_snapshot(
     if not employee_identifier or schedule is None or not schedule.week_start_date:
         return zero_balance
 
-    previous_schedule_filter = Q(schedule__week_start_date__lt=schedule.week_start_date)
-    if schedule.pk:
-        previous_schedule_filter |= Q(
-            schedule__week_start_date=schedule.week_start_date,
-            schedule__created_at__lt=schedule.created_at,
-        )
-        previous_schedule_filter |= Q(
-            schedule__week_start_date=schedule.week_start_date,
-            schedule__created_at=schedule.created_at,
-            schedule__pk__lt=schedule.pk,
-        )
-
-    previous_line = (
+    current_key = get_schedule_line_progression_key(line)
+    previous_candidates = list(
         ScheduleLine.objects.filter(
-            previous_schedule_filter,
             employee_identifier=employee_identifier,
+            schedule__week_start_date__lte=schedule.week_start_date,
         )
         .exclude(pk=getattr(line, "pk", None))
         .select_related("schedule")
-        .order_by("-schedule__week_start_date", "-schedule__created_at", "-schedule__pk", "-pk")
-        .first()
     )
+    previous_line = None
+    previous_key = None
+    for candidate in previous_candidates:
+        candidate_key = get_schedule_line_progression_key(candidate)
+        if candidate_key >= current_key:
+            continue
+        if previous_key is None or candidate_key > previous_key:
+            previous_line = candidate
+            previous_key = candidate_key
+
     if previous_line is None:
         try:
             initial_balance = (
@@ -1169,7 +1200,14 @@ def rebuild_balances_for_employees_from_week(
     if employee_identifiers:
         queryset = queryset.filter(employee_identifier__in=set(employee_identifiers))
 
-    for line in queryset.order_by("schedule__week_start_date", "schedule__created_at", "schedule__pk", "pk"):
+    ordered_lines = sorted(
+        list(queryset),
+        key=lambda line: (
+            (line.employee_identifier or "").strip(),
+            *get_schedule_line_progression_key(line),
+        ),
+    )
+    for line in ordered_lines:
         save_schedule_line_with_balances(line)
 
 

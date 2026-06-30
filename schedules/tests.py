@@ -716,6 +716,90 @@ class ScheduleCalculationTests(TestCase):
         self.assertEqual(second_line.accrued_day_balance, Decimal("2.00"))
         self.assertEqual(second_line.accrued_hour_balance, Decimal("0.00"))
 
+    def test_same_week_balance_uses_real_day_order_even_if_later_site_schedule_was_created_first(self):
+        later_site_schedule = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="014", name="JARDIN.N"),
+            week_start_date=date(2026, 6, 7),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        earlier_site_schedule = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="015", name="RIOJA"),
+            week_start_date=date(2026, 6, 7),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="2001",
+            employee_name="Empleado Orden Real",
+            initial_day_balance=Decimal("6.00"),
+        )
+        later_line = ScheduleLine.objects.create(
+            schedule=later_site_schedule,
+            employee_identifier="2001",
+            employee_name="Empleado Orden Real",
+            daily_max_hours=Decimal("8.00"),
+            day_4_shift_1="08:00-16:00",
+            day_5_shift_1="08:00-16:00",
+            day_6_shift_1="08:00-16:00",
+        )
+        earlier_line = ScheduleLine.objects.create(
+            schedule=earlier_site_schedule,
+            employee_identifier="2001",
+            employee_name="Empleado Orden Real",
+            daily_max_hours=Decimal("8.00"),
+            day_1_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+            day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+            day_3_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+        )
+
+        rebuild_balances_for_employees_from_week(earlier_site_schedule.week_start_date, ["2001"])
+        earlier_line.refresh_from_db()
+        later_line.refresh_from_db()
+
+        self.assertEqual(earlier_line.accrued_day_balance, Decimal("3.00"))
+        self.assertEqual(later_line.accrued_day_balance, Decimal("3.00"))
+
+    def test_same_week_manual_adjustment_is_carried_to_following_site_balance(self):
+        later_site_schedule = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="016", name="JARDIN.N"),
+            week_start_date=date(2026, 6, 7),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        earlier_site_schedule = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="017", name="RIOJA"),
+            week_start_date=date(2026, 6, 7),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="2002",
+            employee_name="Empleado Ajuste",
+            initial_day_balance=Decimal("6.00"),
+        )
+        later_line = ScheduleLine.objects.create(
+            schedule=later_site_schedule,
+            employee_identifier="2002",
+            employee_name="Empleado Ajuste",
+            daily_max_hours=Decimal("8.00"),
+            day_4_shift_1="08:00-16:00",
+            day_5_shift_1="08:00-16:00",
+        )
+        earlier_line = ScheduleLine.objects.create(
+            schedule=earlier_site_schedule,
+            employee_identifier="2002",
+            employee_name="Empleado Ajuste",
+            daily_max_hours=Decimal("8.00"),
+            day_1_shift_1="08:00-16:00",
+            day_2_shift_1="08:00-16:00",
+            day_3_shift_1="08:00-16:00",
+            manual_day_adjustment=Decimal("-3.00"),
+        )
+
+        rebuild_balances_for_employees_from_week(earlier_site_schedule.week_start_date, ["2002"])
+        earlier_line.refresh_from_db()
+        later_line.refresh_from_db()
+
+        self.assertEqual(earlier_line.accrued_day_balance, Decimal("4.00"))
+        self.assertEqual(later_line.accrued_day_balance, Decimal("4.00"))
+
     @patch("schedules.services.fetch_active_staff_for_site", return_value=[])
     def test_sync_schedule_uses_schedule_week_start_for_legacy_period(self, mock_fetch_staff):
         created_count, updated_count = sync_schedule_from_legacy(self.schedule)

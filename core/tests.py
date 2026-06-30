@@ -10,7 +10,8 @@ from django.urls import reverse
 from core.admin import UserSiteAccessAdmin
 from core.access import get_accessible_sites_queryset, user_can_manage_all_sites
 from core.models import Site, UserSiteAccess
-from schedules.models import ScheduleLine, WeeklySchedule
+from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
+from schedules.services import rebuild_balances_for_employees_from_week
 
 User = get_user_model()
 
@@ -116,6 +117,52 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "Revisa horas semanales.")
         self.assertContains(response, "Ayuda")
         self.assertContains(response, "10vJTA2WoJ0HkF5ByLp35Gw1LKR2qs8zR/preview")
+
+    def test_dashboard_uses_latest_balance_after_same_week_transfer(self):
+        transfer_schedule_late = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="009", name="JARDIN.N"),
+            week_start_date=date(2026, 6, 21),
+            status=WeeklySchedule.Status.DRAFT,
+        )
+        transfer_schedule_early = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="010", name="RIOJA"),
+            week_start_date=date(2026, 6, 21),
+            status=WeeklySchedule.Status.DRAFT,
+        )
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="2005",
+            employee_name="Empleado Dashboard",
+            initial_day_balance=Decimal("6.00"),
+        )
+        ScheduleLine.objects.create(
+            schedule=transfer_schedule_late,
+            employee_identifier="2005",
+            employee_name="Empleado Dashboard",
+            job_role_name="AUXILIAR",
+            day_4_shift_1="08:00-16:00",
+            day_5_shift_1="08:00-16:00",
+            day_6_shift_1="08:00-16:00",
+        )
+        ScheduleLine.objects.create(
+            schedule=transfer_schedule_early,
+            employee_identifier="2005",
+            employee_name="Empleado Dashboard",
+            job_role_name="AUXILIAR",
+            day_1_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+            day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+            day_3_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+        )
+
+        rebuild_balances_for_employees_from_week(date(2026, 6, 21), ["2005"])
+        self.client.login(username="admin_dashboard", password="secret")
+        response = self.client.get(
+            reverse("dashboard"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["extra_day_total"], Decimal("3.00"))
 
 
 class SiteOrderingTests(TestCase):

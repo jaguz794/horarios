@@ -6,16 +6,19 @@ import django.db.models.deletion
 
 
 def rebuild_existing_schedule_balances(apps, schema_editor):
-    from schedules.models import ScheduleLine
-    from schedules.services import save_schedule_line_with_balances
+    ScheduleLine = apps.get_model("schedules", "ScheduleLine")
 
     queryset = ScheduleLine.objects.select_related("schedule").order_by("schedule__week_start_date", "pk")
     for line in queryset.iterator():
+        changed = False
         if not line.manual_day_adjustment and line.pending_days:
             line.manual_day_adjustment = line.pending_days
+            changed = True
         if not line.manual_hour_adjustment and line.pending_hours:
             line.manual_hour_adjustment = line.pending_hours
-        save_schedule_line_with_balances(line)
+            changed = True
+        if changed:
+            line.save(update_fields=["manual_day_adjustment", "manual_hour_adjustment"])
 
 
 class Migration(migrations.Migration):

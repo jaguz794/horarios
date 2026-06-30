@@ -13,7 +13,7 @@ from openpyxl.utils import get_column_letter
 
 from core.access import get_accessible_schedules_queryset
 from schedules.models import ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
-from schedules.services import build_line_day_breakdown
+from schedules.services import build_line_day_breakdown, get_schedule_line_progression_key
 
 
 def build_excel_response(title: str, headers: list[str], rows: list[list[object]], filename: str) -> HttpResponse:
@@ -321,14 +321,17 @@ def get_latest_visible_lines_by_employee(user) -> list[ScheduleLine]:
         )
         .order_by("-week_start_date", "site__code")
     )
-    latest_by_employee: dict[str, ScheduleLine] = {}
+    latest_by_employee: dict[str, tuple[tuple[object, ...], ScheduleLine]] = {}
     for schedule in queryset:
         for line in schedule.lines.all():
             employee_identifier = (line.employee_identifier or "").strip()
-            if not employee_identifier or employee_identifier in latest_by_employee:
+            if not employee_identifier:
                 continue
-            latest_by_employee[employee_identifier] = line
-    return list(latest_by_employee.values())
+            candidate_key = get_schedule_line_progression_key(line)
+            current_entry = latest_by_employee.get(employee_identifier)
+            if current_entry is None or candidate_key > current_entry[0]:
+                latest_by_employee[employee_identifier] = (candidate_key, line)
+    return [entry[1] for entry in latest_by_employee.values()]
 
 
 def build_balance_role_breakdown(lines: list[ScheduleLine]) -> dict[str, object]:
