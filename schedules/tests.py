@@ -1,10 +1,11 @@
-from io import BytesIO
+from io import BytesIO, StringIO
 from datetime import date, time
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from django.test import SimpleTestCase, TestCase
@@ -22,9 +23,11 @@ from schedules.models import (
     WeeklySchedule,
 )
 from schedules.services import (
+    build_schedule_balance_audit_rows,
     copy_schedule_template,
     get_rest_shift_label,
     get_schedule_line_compact_alert_summary,
+    import_employee_initial_balances,
     parse_shift_hours,
     recalculate_schedule_line,
     rebuild_balances_for_employees_from_week,
@@ -1520,3 +1523,138 @@ class InitialBalanceUploadViewTests(TestCase):
         balance = EmployeeInitialBalance.objects.get(employee_identifier="999")
         self.assertEqual(balance.initial_day_balance, Decimal("1.00"))
         self.assertEqual(balance.initial_hour_balance, Decimal("2.50"))
+
+
+class InitialBalanceAuditTests(TestCase):
+    def setUp(self):
+        config = SystemConfiguration.load()
+        config.default_weekly_hours = Decimal("46.00")
+        config.default_daily_max_hours = Decimal("8.00")
+        config.save()
+
+        self.site = Site.objects.create(code="007", name="JARDIN.I")
+        self.first_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 28),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        self.second_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 7, 5),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        self.first_line = ScheduleLine.objects.create(
+            schedule=self.first_schedule,
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            job_role_name="AUXILIAR DE CARNES",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+            day_0_shift_1="08:00-16:00",
+            day_1_shift_1="08:00-16:00",
+            day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+            day_3_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+        )
+        self.second_line = ScheduleLine.objects.create(
+            schedule=self.second_schedule,
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            job_role_name="AUXILIAR DE CARNES",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+
+    def test_initial_balance_update_rebuilds_existing_weeks_and_keeps_audit_in_sync(self):
+        balance = EmployeeInitialBalance.objects.create(
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            initial_day_balance=Decimal("9.00"),
+            initial_hour_balance=Decimal("0.00"),
+        )
+
+        self.first_line.refresh_from_db()
+        self.second_line.refresh_from_db()
+        self.assertEqual(self.first_line.accrued_day_balance, Decimal("9.00"))
+        self.assertEqual(self.second_line.accrued_day_balance, Decimal("9.00"))
+
+        audit_row = build_schedule_balance_audit_rows(["9100"])[0]
+        self.assertEqual(audit_row["audited_day_balance"], Decimal("9.00"))
+        self.assertEqual(audit_row["stored_day_balance"], Decimal("9.00"))
+        self.assertFalse(audit_row["has_difference"])
+
+        balance.initial_day_balance = Decimal("7.00")
+        balance.save()
+
+        self.first_line.refresh_from_db()
+        self.second_line.refresh_from_db()
+        self.assertEqual(self.first_line.accrued_day_balance, Decimal("7.00"))
+        self.assertEqual(self.second_line.accrued_day_balance, Decimal("7.00"))
+
+        audit_row = build_schedule_balance_audit_rows(["9100"])[0]
+        self.assertEqual(audit_row["audited_day_balance"], Decimal("7.00"))
+        self.assertEqual(audit_row["stored_day_balance"], Decimal("7.00"))
+        self.assertFalse(audit_row["has_difference"])
+
+    def test_initial_balance_delete_rebuilds_existing_weeks(self):
+        balance = EmployeeInitialBalance.objects.create(
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            initial_day_balance=Decimal("9.00"),
+        )
+        self.first_line.refresh_from_db()
+        self.second_line.refresh_from_db()
+        self.assertEqual(self.second_line.accrued_day_balance, Decimal("9.00"))
+
+        balance.delete()
+
+        self.first_line.refresh_from_db()
+        self.second_line.refresh_from_db()
+        self.assertEqual(self.first_line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(self.second_line.accrued_day_balance, Decimal("0.00"))
+
+        audit_row = build_schedule_balance_audit_rows(["9100"])[0]
+        self.assertEqual(audit_row["audited_day_balance"], Decimal("0.00"))
+        self.assertEqual(audit_row["stored_day_balance"], Decimal("0.00"))
+        self.assertFalse(audit_row["has_difference"])
+
+    @patch("schedules.services.rebuild_balances_for_employees_from_week")
+    def test_import_employee_initial_balances_rebuilds_history_once(self, rebuild_mock):
+        upload = SimpleUploadedFile(
+            "saldos_iniciales.csv",
+            "Cedula,Nombres y apellidos,Dias extras,Horas extras\n9100,Empleado Auditoria,9,0\n".encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        result = import_employee_initial_balances(upload)
+
+        self.assertEqual(result["processed_count"], 1)
+        rebuild_mock.assert_called_once()
+
+    def test_audit_command_detects_and_fixes_mismatch(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            initial_day_balance=Decimal("9.00"),
+        )
+        self.first_line.refresh_from_db()
+        self.second_line.refresh_from_db()
+        self.assertEqual(self.second_line.accrued_day_balance, Decimal("9.00"))
+
+        EmployeeInitialBalance.objects.filter(employee_identifier="9100").update(
+            initial_day_balance=Decimal("8.00")
+        )
+
+        output = StringIO()
+        call_command("audit_schedule_balances", stdout=output)
+        command_output = output.getvalue()
+        self.assertIn("9100", command_output)
+        self.assertIn("dif_dias=1.00", command_output)
+
+        fixed_output = StringIO()
+        call_command("audit_schedule_balances", "--fix", stdout=fixed_output)
+        self.second_line.refresh_from_db()
+        self.assertEqual(self.second_line.accrued_day_balance, Decimal("8.00"))
+
+        audit_row = build_schedule_balance_audit_rows(["9100"])[0]
+        self.assertFalse(audit_row["has_difference"])
+        self.assertIn("Recalculo aplicado correctamente", fixed_output.getvalue())

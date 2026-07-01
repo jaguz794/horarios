@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
@@ -8,6 +10,8 @@ import re
 import unicodedata
 
 from core.models import JobRole, ShiftTemplate, SystemConfiguration
+from django.db.models import DecimalField, Sum, Value
+from django.db.models.functions import Coalesce
 from django.db.utils import OperationalError, ProgrammingError
 from legacy.services import fetch_active_staff_for_site
 from openpyxl import load_workbook
@@ -42,6 +46,20 @@ MONEY_HOUR_COMPENSATION_MODES = {
 MONEY_DAY_COMPENSATION_MODES = {
     ScheduleLine.CompensationMode.PAY_MONEY_DAY,
 }
+_INITIAL_BALANCE_REBUILD_SUPPRESSION = ContextVar("initial_balance_rebuild_suppression", default=0)
+
+
+@contextmanager
+def suppress_initial_balance_rebuild():
+    token = _INITIAL_BALANCE_REBUILD_SUPPRESSION.set(_INITIAL_BALANCE_REBUILD_SUPPRESSION.get() + 1)
+    try:
+        yield
+    finally:
+        _INITIAL_BALANCE_REBUILD_SUPPRESSION.reset(token)
+
+
+def initial_balance_rebuild_is_suppressed() -> bool:
+    return _INITIAL_BALANCE_REBUILD_SUPPRESSION.get() > 0
 
 
 def normalize_shift_label(value: str) -> str:
@@ -688,51 +706,58 @@ def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[
     updated_count = 0
     touched_identifiers: list[str] = []
 
-    for row_number, row in enumerate(data_rows, start=2):
-        identifier = str(row[identifier_index] or "").strip().upper() if identifier_index < len(row) else ""
-        if not identifier:
-            continue
-        employee_name = str(row[name_index] or "").strip() if name_index is not None and name_index < len(row) else ""
-        initial_day_balance = (
-            parse_initial_balance_decimal(row[day_index], "dias", row_number)
-            if day_index is not None and day_index < len(row)
-            else Decimal("0.00")
-        )
-        initial_hour_balance = (
-            parse_initial_balance_decimal(row[hour_index], "horas", row_number)
-            if hour_index is not None and hour_index < len(row)
-            else Decimal("0.00")
-        )
-
-        balance, created = EmployeeInitialBalance.objects.get_or_create(
-            employee_identifier=identifier,
-            defaults={
-                "employee_name": employee_name,
-                "initial_day_balance": initial_day_balance,
-                "initial_hour_balance": initial_hour_balance,
-                "created_by": updated_by,
-                "updated_by": updated_by,
-            },
-        )
-        if created:
-            created_count += 1
-        else:
-            balance.employee_name = employee_name or balance.employee_name
-            balance.initial_day_balance = initial_day_balance
-            balance.initial_hour_balance = initial_hour_balance
-            balance.updated_by = updated_by
-            balance.save(
-                update_fields=[
-                    "employee_name",
-                    "initial_day_balance",
-                    "initial_hour_balance",
-                    "updated_by",
-                    "updated_at",
-                ]
+    with suppress_initial_balance_rebuild():
+        for row_number, row in enumerate(data_rows, start=2):
+            identifier = str(row[identifier_index] or "").strip().upper() if identifier_index < len(row) else ""
+            if not identifier:
+                continue
+            employee_name = (
+                str(row[name_index] or "").strip()
+                if name_index is not None and name_index < len(row)
+                else ""
             )
-            updated_count += 1
+            initial_day_balance = (
+                parse_initial_balance_decimal(row[day_index], "dias", row_number)
+                if day_index is not None and day_index < len(row)
+                else Decimal("0.00")
+            )
+            initial_hour_balance = (
+                parse_initial_balance_decimal(row[hour_index], "horas", row_number)
+                if hour_index is not None and hour_index < len(row)
+                else Decimal("0.00")
+            )
 
-        touched_identifiers.append(identifier)
+            balance, created = EmployeeInitialBalance.objects.get_or_create(
+                employee_identifier=identifier,
+                defaults={
+                    "employee_name": employee_name,
+                    "initial_day_balance": initial_day_balance,
+                    "initial_hour_balance": initial_hour_balance,
+                    "created_by": updated_by,
+                    "updated_by": updated_by,
+                },
+            )
+            if created:
+                created_count += 1
+            else:
+                balance.employee_name = employee_name or balance.employee_name
+                balance.initial_day_balance = initial_day_balance
+                balance.initial_hour_balance = initial_hour_balance
+                balance.updated_by = updated_by
+                balance.save(
+                    update_fields=[
+                        "employee_name",
+                        "initial_day_balance",
+                        "initial_hour_balance",
+                        "updated_by",
+                        "updated_at",
+                    ]
+                )
+                updated_count += 1
+
+            touched_identifiers.append(identifier)
+
+    touched_identifiers = sorted({identifier for identifier in touched_identifiers if identifier})
 
     if touched_identifiers:
         earliest_schedule = (
@@ -1193,6 +1218,27 @@ def save_schedule_line_with_balances(line: ScheduleLine) -> ScheduleLine:
     return line
 
 
+def rebuild_balances_for_employee_from_earliest_schedule(employee_identifier: str) -> bool:
+    cleaned_identifier = (employee_identifier or "").strip()
+    if not cleaned_identifier:
+        return False
+
+    first_line = (
+        ScheduleLine.objects.select_related("schedule")
+        .filter(employee_identifier=cleaned_identifier)
+        .order_by("schedule__week_start_date", "pk")
+        .first()
+    )
+    if first_line is None or first_line.schedule is None:
+        return False
+
+    rebuild_balances_for_employees_from_week(
+        first_line.schedule.week_start_date,
+        [cleaned_identifier],
+    )
+    return True
+
+
 def rebuild_balances_for_employees_from_week(
     week_start_date: date,
     employee_identifiers: list[str] | set[str] | tuple[str, ...] | None = None,
@@ -1212,6 +1258,113 @@ def rebuild_balances_for_employees_from_week(
     )
     for line in ordered_lines:
         save_schedule_line_with_balances(line)
+
+
+def get_latest_schedule_lines_by_employee(
+    employee_identifiers: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> dict[str, ScheduleLine]:
+    queryset = ScheduleLine.objects.select_related("schedule", "schedule__site")
+    if employee_identifiers:
+        queryset = queryset.filter(employee_identifier__in=set(employee_identifiers))
+
+    latest_by_employee: dict[str, tuple[tuple[object, ...], ScheduleLine]] = {}
+    for line in queryset:
+        cleaned_identifier = (line.employee_identifier or "").strip()
+        if not cleaned_identifier:
+            continue
+        candidate_key = get_schedule_line_progression_key(line)
+        current_entry = latest_by_employee.get(cleaned_identifier)
+        if current_entry is None or candidate_key > current_entry[0]:
+            latest_by_employee[cleaned_identifier] = (candidate_key, line)
+
+    return {
+        employee_identifier: entry[1]
+        for employee_identifier, entry in latest_by_employee.items()
+    }
+
+
+def build_schedule_balance_audit_rows(
+    employee_identifiers: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, object]]:
+    latest_lines = get_latest_schedule_lines_by_employee(employee_identifiers)
+    if not latest_lines:
+        return []
+
+    identifiers = list(latest_lines.keys())
+    initial_balances = {
+        balance.employee_identifier: balance
+        for balance in EmployeeInitialBalance.objects.filter(employee_identifier__in=identifiers)
+    }
+    movement_totals = {
+        row["employee_identifier"]: {
+            "days": decimal_hours(row["total_days"]),
+            "hours": decimal_hours(row["total_hours"]),
+        }
+        for row in (
+            ScheduleBalanceMovement.objects.filter(employee_identifier__in=identifiers)
+            .values("employee_identifier")
+            .annotate(
+                total_days=Coalesce(
+                    Sum("quantity_days"),
+                    Value(Decimal("0.00"), output_field=DecimalField(max_digits=8, decimal_places=2)),
+                ),
+                total_hours=Coalesce(
+                    Sum("quantity_hours"),
+                    Value(Decimal("0.00"), output_field=DecimalField(max_digits=10, decimal_places=2)),
+                ),
+            )
+        )
+    }
+
+    rows: list[dict[str, object]] = []
+    for employee_identifier, line in latest_lines.items():
+        initial_balance = initial_balances.get(employee_identifier)
+        totals = movement_totals.get(
+            employee_identifier,
+            {"days": Decimal("0.00"), "hours": Decimal("0.00")},
+        )
+        initial_day_balance = decimal_hours(
+            getattr(initial_balance, "initial_day_balance", Decimal("0.00"))
+        )
+        initial_hour_balance = decimal_hours(
+            getattr(initial_balance, "initial_hour_balance", Decimal("0.00"))
+        )
+        audited_day_balance = (initial_day_balance + totals["days"]).quantize(TWO_DECIMALS)
+        audited_hour_balance = (initial_hour_balance + totals["hours"]).quantize(TWO_DECIMALS)
+        stored_day_balance = decimal_hours(line.accrued_day_balance)
+        stored_hour_balance = decimal_hours(line.accrued_hour_balance)
+        day_difference = (stored_day_balance - audited_day_balance).quantize(TWO_DECIMALS)
+        hour_difference = (stored_hour_balance - audited_hour_balance).quantize(TWO_DECIMALS)
+
+        rows.append(
+            {
+                "site_code": getattr(line.schedule.site, "code", ""),
+                "site_name": getattr(line.schedule.site, "name", ""),
+                "job_role_name": line.job_role_name,
+                "employee_identifier": employee_identifier,
+                "employee_name": line.employee_name,
+                "audited_day_balance": audited_day_balance,
+                "stored_day_balance": stored_day_balance,
+                "day_difference": day_difference,
+                "audited_hour_balance": audited_hour_balance,
+                "stored_hour_balance": stored_hour_balance,
+                "hour_difference": hour_difference,
+                "has_difference": (
+                    day_difference != Decimal("0.00")
+                    or hour_difference != Decimal("0.00")
+                ),
+            }
+        )
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row["site_code"] or ""),
+            str(row["job_role_name"] or "").casefold(),
+            str(row["employee_name"] or "").casefold(),
+            str(row["employee_identifier"] or ""),
+        ),
+    )
 
 
 def purge_blacklisted_lines_from_schedule(schedule: WeeklySchedule) -> list[str]:
