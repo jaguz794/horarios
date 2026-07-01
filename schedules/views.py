@@ -111,7 +111,8 @@ class ScheduleLoadView(LoginRequiredMixin, FormView):
             created_count, updated_count = sync_schedule_from_legacy(schedule)
             messages.success(
                 self.request,
-                f"Horario cargado. Nuevos: {created_count}. Actualizados: {updated_count}.",
+                f"Horario cargado. Nuevos: {created_count}. Actualizados: {updated_count}. "
+                "Los saldos relacionados se recalcularon automaticamente.",
             )
         else:
             messages.info(self.request, "Se abrio el horario existente sin recargar personal.")
@@ -395,7 +396,8 @@ class ScheduleDeleteView(LoginRequiredMixin, View):
                 rebuild_balances_for_employees_from_week(week_start, affected_employee_ids)
         messages.success(
             request,
-            f"Horario eliminado: {site_name} - {week_start}. Se borraron {line_count} registros de personal.",
+            f"Horario eliminado: {site_name} - {week_start}. Se borraron {line_count} registros de personal. "
+            "Los saldos relacionados se recalcularon automaticamente.",
         )
         return redirect("schedules:list")
 

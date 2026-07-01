@@ -1246,7 +1246,6 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Rec. noct.")
         self.assertContains(response, 'data-show-night-hours="true"', html=False)
-
     def test_site_user_sees_compact_alert_summary(self):
         self.client.login(username="operador_delete", password="secret")
 
@@ -1416,6 +1415,87 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(worksheet["E7"].value, "Turno 2")
         self.assertEqual(worksheet["F7"].value, "Horas")
         self.assertEqual(worksheet["A8"].value, self.line.employee_identifier)
+
+
+class ScheduleLoadViewTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.site = Site.objects.create(code="007", name="JARDIN.I")
+        self.admin_user = User.objects.create_user(username="admin_load", password="secret")
+        admin_access = UserSiteAccess.objects.get(user=self.admin_user)
+        admin_access.role = UserSiteAccess.Role.ADMIN
+        admin_access.save()
+
+    @patch("schedules.services.fetch_active_staff_for_site")
+    def test_schedule_load_rebuilds_future_balance_automatically(self, mock_fetch_staff):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="7100",
+            employee_name="Empleado Creacion",
+            initial_day_balance=Decimal("4.00"),
+        )
+        template_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 7, 19),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        ScheduleLine.objects.create(
+            schedule=template_schedule,
+            employee_identifier="7100",
+            employee_name="Empleado Creacion",
+            job_role_name="AUXILIAR",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+            day_0_shift_1="08:00-16:00",
+        )
+        future_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 7, 12),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        future_line = ScheduleLine.objects.create(
+            schedule=future_schedule,
+            employee_identifier="7100",
+            employee_name="Empleado Creacion",
+            job_role_name="AUXILIAR",
+            weekly_target_hours=Decimal("46.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        rebuild_balances_for_employees_from_week(future_schedule.week_start_date, ["7100"])
+        future_line.refresh_from_db()
+        self.assertEqual(future_line.accrued_day_balance, Decimal("4.00"))
+
+        mock_fetch_staff.return_value = [
+            OperationalStaffingRecord(
+                employee_id="7100",
+                employee_name="Empleado Creacion",
+                site_code=self.site.code,
+                department_code="A1",
+                department_name="CARNES",
+                role_code="AUX",
+                role_name="AUXILIAR",
+            ),
+        ]
+
+        self.client.login(username="admin_load", password="secret")
+        response = self.client.post(
+            reverse("schedules:load"),
+            {
+                "site": str(self.site.pk),
+                "week_start_date": "2026-07-05",
+                "copy_from_schedule": str(template_schedule.pk),
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        created_schedule = WeeklySchedule.objects.get(site=self.site, week_start_date=date(2026, 7, 5))
+        created_line = ScheduleLine.objects.get(schedule=created_schedule, employee_identifier="7100")
+        future_line.refresh_from_db()
+
+        self.assertEqual(created_line.day_0_shift_1, "08:00-16:00")
+        self.assertEqual(created_line.accrued_day_balance, Decimal("5.00"))
+        self.assertEqual(future_line.accrued_day_balance, Decimal("5.00"))
 
 
 class InitialBalanceUploadViewTests(TestCase):
