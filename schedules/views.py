@@ -382,7 +382,17 @@ class ScheduleDeleteView(LoginRequiredMixin, View):
         site_name = schedule.site.name
         week_start = schedule.week_start_date
         line_count = schedule.lines.count()
-        schedule.delete()
+        affected_employee_ids = sorted(
+            {
+                (line.employee_identifier or "").strip()
+                for line in schedule.lines.all()
+                if (line.employee_identifier or "").strip()
+            }
+        )
+        with transaction.atomic():
+            schedule.delete()
+            if affected_employee_ids:
+                rebuild_balances_for_employees_from_week(week_start, affected_employee_ids)
         messages.success(
             request,
             f"Horario eliminado: {site_name} - {week_start}. Se borraron {line_count} registros de personal.",

@@ -453,7 +453,7 @@ class ScheduleCalculationTests(TestCase):
             employee_name="Empleado Demo 6",
         )
         form = ScheduleLineForm(
-            data=self.build_form_data(day_0_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY),
+            data=self.build_form_data(day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY),
             instance=line,
             schedule=self.schedule,
             shift_choices=[],
@@ -461,7 +461,7 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertFalse(form.is_valid())
-        self.assertIn("hasta ese dia", form.errors["day_0_compensation_mode"][0].lower())
+        self.assertIn("hasta ese dia", form.errors["day_2_compensation_mode"][0].lower())
 
     def test_form_rejects_pay_day_when_only_hour_balance_exists(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -483,6 +483,36 @@ class ScheduleCalculationTests(TestCase):
             daily_max_hours=Decimal("8.00"),
         )
         form = ScheduleLineForm(
+            data=self.build_form_data(day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("1 dia acumulado", form.errors["day_2_compensation_mode"][0].lower())
+
+    def test_form_rejects_pay_day_on_sunday(self):
+        prior_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 5, 31),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        ScheduleLine.objects.create(
+            schedule=prior_schedule,
+            employee_identifier="130AA",
+            employee_name="Empleado Domingo",
+            accrued_day_balance=Decimal("2.00"),
+            accrued_total_hours_balance=Decimal("16.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="130AA",
+            employee_name="Empleado Domingo",
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
             data=self.build_form_data(day_0_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY),
             instance=line,
             schedule=self.schedule,
@@ -491,7 +521,7 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertFalse(form.is_valid())
-        self.assertIn("1 dia acumulado", form.errors["day_0_compensation_mode"][0].lower())
+        self.assertIn("domingo o festivo", form.errors["day_0_compensation_mode"][0].lower())
 
     def test_form_rejects_money_day_when_only_hour_balance_exists(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -513,7 +543,7 @@ class ScheduleCalculationTests(TestCase):
             daily_max_hours=Decimal("8.00"),
         )
         form = ScheduleLineForm(
-            data=self.build_form_data(day_0_compensation_mode=ScheduleLine.CompensationMode.PAY_MONEY_DAY),
+            data=self.build_form_data(day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_MONEY_DAY),
             instance=line,
             schedule=self.schedule,
             shift_choices=[],
@@ -522,7 +552,42 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertFalse(form.is_valid())
-        self.assertIn("pago en dinero por dia", form.errors["day_0_compensation_mode"][0].lower())
+        self.assertIn("pago en dinero por dia", form.errors["day_2_compensation_mode"][0].lower())
+
+    def test_form_accepts_money_day_on_holiday(self):
+        holiday_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 28),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        prior_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 21),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        ScheduleLine.objects.create(
+            schedule=prior_schedule,
+            employee_identifier="130BB",
+            employee_name="Empleado Festivo",
+            accrued_day_balance=Decimal("2.00"),
+            accrued_total_hours_balance=Decimal("16.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=holiday_schedule,
+            employee_identifier="130BB",
+            employee_name="Empleado Festivo",
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(day_1_compensation_mode=ScheduleLine.CompensationMode.PAY_MONEY_DAY),
+            instance=line,
+            schedule=holiday_schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+            allow_money_payment=True,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
 
     def test_form_accepts_money_day_with_prior_day_balance(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -544,7 +609,7 @@ class ScheduleCalculationTests(TestCase):
             daily_max_hours=Decimal("8.00"),
         )
         form = ScheduleLineForm(
-            data=self.build_form_data(day_0_compensation_mode=ScheduleLine.CompensationMode.PAY_MONEY_DAY),
+            data=self.build_form_data(day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_MONEY_DAY),
             instance=line,
             schedule=self.schedule,
             shift_choices=[],
@@ -574,8 +639,8 @@ class ScheduleCalculationTests(TestCase):
         )
         form = ScheduleLineForm(
             data=self.build_form_data(
-                day_0_shift_1="08:00-16:00",
-                day_0_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+                day_2_shift_1="08:00-16:00",
+                day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
             ),
             instance=line,
             schedule=self.schedule,
@@ -584,8 +649,8 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["day_0_shift_1"], get_rest_shift_label())
-        self.assertEqual(form.cleaned_data["day_0_shift_2"], "")
+        self.assertEqual(form.cleaned_data["day_2_shift_1"], get_rest_shift_label())
+        self.assertEqual(form.cleaned_data["day_2_shift_2"], "")
 
     def test_form_rejects_pay_hours_over_prior_available_balance(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -922,6 +987,87 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.url, reverse("schedules:list"))
         self.assertFalse(WeeklySchedule.objects.filter(pk=self.schedule.pk).exists())
         self.assertEqual(ScheduleLine.objects.count(), 0)
+
+    def test_admin_delete_rebuilds_future_day_balance_after_rest_payment_removed(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="7001",
+            employee_name="Empleado Saldo",
+            initial_day_balance=Decimal("4.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="7001",
+            employee_name="Empleado Saldo",
+            daily_max_hours=Decimal("8.00"),
+            day_1_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+            day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+        )
+        future_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 14),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        future_line = ScheduleLine.objects.create(
+            schedule=future_schedule,
+            employee_identifier="7001",
+            employee_name="Empleado Saldo",
+            daily_max_hours=Decimal("8.00"),
+        )
+        rebuild_balances_for_employees_from_week(self.schedule.week_start_date, ["7001"])
+        future_line.refresh_from_db()
+        self.assertEqual(future_line.accrued_day_balance, Decimal("2.00"))
+
+        self.client.login(username="admin_delete", password="secret")
+        response = self.client.post(
+            reverse("schedules:delete", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        future_line.refresh_from_db()
+        self.assertEqual(future_line.accrued_day_balance, Decimal("4.00"))
+        self.assertFalse(ScheduleLine.objects.filter(pk=line.pk).exists())
+
+    def test_admin_delete_rebuilds_future_day_balance_after_special_day_removed(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="7002",
+            employee_name="Empleado Domingo",
+            initial_day_balance=Decimal("4.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="7002",
+            employee_name="Empleado Domingo",
+            daily_max_hours=Decimal("8.00"),
+            day_0_shift_1="08:00-16:00",
+        )
+        future_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 14),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        future_line = ScheduleLine.objects.create(
+            schedule=future_schedule,
+            employee_identifier="7002",
+            employee_name="Empleado Domingo",
+            daily_max_hours=Decimal("8.00"),
+        )
+        rebuild_balances_for_employees_from_week(self.schedule.week_start_date, ["7002"])
+        future_line.refresh_from_db()
+        self.assertEqual(future_line.accrued_day_balance, Decimal("5.00"))
+
+        self.client.login(username="admin_delete", password="secret")
+        response = self.client.post(
+            reverse("schedules:delete", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        future_line.refresh_from_db()
+        self.assertEqual(future_line.accrued_day_balance, Decimal("4.00"))
+        self.assertFalse(ScheduleLine.objects.filter(pk=line.pk).exists())
 
     def test_admin_sees_delete_action(self):
         self.client.login(username="admin_delete", password="secret")

@@ -526,6 +526,12 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             )
             compensation_entries[-1]["special_generated"] = bool(day_worked_hours > Decimal("0.00") and is_special_day)
 
+            if compensation_mode == ScheduleLine.CompensationMode.PAY_DAY and is_special_day:
+                self.add_error(
+                    compensation_mode_field,
+                    "No puedes pagar dias acumulados en domingo o festivo.",
+                )
+
             if shift_2 and not shift_1:
                 self.add_error(shift_1_field, "Debes seleccionar primero el turno 1.")
                 self.add_error(shift_2_field, "El turno 2 no puede quedar solo.")
