@@ -1,11 +1,13 @@
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.test import TestCase
 from django.urls import reverse
+from openpyxl import load_workbook
 
 from core.admin import UserSiteAccessAdmin
 from core.access import get_accessible_sites_queryset, user_can_manage_all_sites
@@ -203,6 +205,81 @@ class SiteOrderingTests(TestCase):
             list(form_field.queryset.values_list("code", flat=True)),
             ["001", "002", "010"],
         )
+
+
+class ReportHubViewTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.site = Site.objects.create(code="007", name="JARDIN.I")
+        self.user = User.objects.create_user(username="admin_reports", password="secret")
+        access = UserSiteAccess.objects.get(user=self.user)
+        access.role = UserSiteAccess.Role.ADMIN
+        access.save()
+        self.schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 7, 5),
+            status=WeeklySchedule.Status.DRAFT,
+        )
+        ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="5001",
+            employee_name="Ana Inventario",
+            job_role_name="AUXILIAR",
+            day_1_inventory=True,
+        )
+        ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="5002",
+            employee_name="Bruno Inventario",
+            job_role_name="CAJERO",
+            day_1_inventory=True,
+            day_4_inventory=True,
+        )
+
+    def test_reports_can_export_inventory_excel(self):
+        self.client.login(username="admin_reports", password="secret")
+
+        response = self.client.post(
+            reverse("reports"),
+            {
+                "week-site": str(self.site.pk),
+                "week-week_start_date": "2026-07-05",
+                "report_type": "inventory_excel",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        workbook = load_workbook(BytesIO(response.content))
+        worksheet = workbook.active
+        self.assertEqual(worksheet["A1"].value, "Fecha inventario")
+        self.assertEqual(worksheet["C2"].value, "JARDIN.I")
+        self.assertEqual(worksheet["D2"].value, "5001")
+        self.assertEqual(worksheet["F2"].value, "AUXILIAR")
+
+    def test_reports_can_export_inventory_pdf(self):
+        self.client.login(username="admin_reports", password="secret")
+
+        response = self.client.post(
+            reverse("reports"),
+            {
+                "week-site": str(self.site.pk),
+                "week-week_start_date": "2026-07-05",
+                "report_type": "inventory_pdf",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("planilla_inventario_20260705.pdf", response["Content-Disposition"])
+        self.assertGreater(len(response.content), 1000)
 
 
 class UserAdminTests(TestCase):

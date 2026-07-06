@@ -817,6 +817,26 @@ textarea:focus {
   display: none;
 }
 
+.inventory-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--brand-green-dark);
+}
+
+.inventory-checkbox {
+  width: auto;
+  margin: 0;
+  transform: scale(1.05);
+  accent-color: var(--brand-green);
+}
+
+.inventory-flag span {
+  line-height: 1;
+}
+
 .payment-info {
   display: block;
   font-size: 0.76rem;

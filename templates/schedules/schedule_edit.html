@@ -200,8 +200,12 @@
               {% endif %}
             </td>
             {% for column in day_columns %}
-            {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name %}
-            <td data-day-index="{{ column.index }}" data-special-day="{{ column.special_label }}">
+            {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name inventory_field=line_form|form_field:column.inventory_name %}
+            <td
+              data-day-index="{{ column.index }}"
+              data-day-label="{{ column.label }} {{ column.date }}"
+              data-special-day="{{ column.special_label }}"
+            >
               <div class="turn-cell">
                 {{ shift_1 }}
                 {{ shift_2 }}
@@ -216,6 +220,11 @@
                 {{ shift_2.errors }}
                 {{ compensation_mode.errors }}
                 {{ compensation_hours.errors }}
+                <label class="inventory-flag">
+                  {{ inventory_field }}
+                  <span>Inventario</span>
+                </label>
+                {{ inventory_field.errors }}
                 <small class="day-hours" data-day-hours>{{ line_form.instance|attr:column.hours_attr|hours_int }} h</small>
                 {% if show_night_hours %}
                 <small class="day-night" data-day-night></small>

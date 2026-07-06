@@ -264,6 +264,22 @@ function initScheduleCalculations() {
     const manualDayAdjustmentInput = row.querySelector('input[name$="-manual_day_adjustment"]');
     const manualHourAdjustmentInput = row.querySelector('input[name$="-manual_hour_adjustment"]');
     const dayCells = row.querySelectorAll("[data-day-index]");
+    const employeeName = row.querySelector(".schedule-cell-employee")?.textContent?.trim() || "Esta persona";
+
+    const confirmInventoryParticipation = (event) => {
+      const checkbox = event.currentTarget;
+      if (!checkbox.checked) {
+        return;
+      }
+      const dayCell = checkbox.closest("[data-day-index]");
+      const dayLabel = dayCell?.dataset.dayLabel || "este dia";
+      const confirmed = window.confirm(
+        `Esta seguro que ${employeeName} participa en el inventario del ${dayLabel}?`,
+      );
+      if (!confirmed) {
+        checkbox.checked = false;
+      }
+    };
 
     const updatePaymentInfo = (dayCell, modeValue, state) => {
       const paymentInfo = dayCell.querySelector("[data-payment-info]");
@@ -607,6 +623,10 @@ function initScheduleCalculations() {
       [manualDayAdjustmentInput, manualHourAdjustmentInput].forEach((field) => {
         field?.addEventListener("input", recalculateRow);
         field?.addEventListener("change", recalculateRow);
+      });
+
+      row.querySelectorAll('[data-inventory-checkbox="true"]').forEach((field) => {
+        field.addEventListener("change", confirmInventoryParticipation);
       });
     }
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
-
+from dataclasses import dataclass
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 
@@ -14,6 +14,31 @@ from openpyxl.utils import get_column_letter
 from core.access import get_accessible_schedules_queryset
 from schedules.models import ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
 from schedules.services import build_line_day_breakdown, get_schedule_line_progression_key
+
+SPANISH_MONTH_NAMES = {
+    1: "Enero",
+    2: "Febrero",
+    3: "Marzo",
+    4: "Abril",
+    5: "Mayo",
+    6: "Junio",
+    7: "Julio",
+    8: "Agosto",
+    9: "Septiembre",
+    10: "Octubre",
+    11: "Noviembre",
+    12: "Diciembre",
+}
+
+
+@dataclass(slots=True)
+class InventoryReportEntry:
+    site_code: str
+    site_name: str
+    inventory_date: date
+    employee_identifier: str
+    employee_name: str
+    job_role_name: str
 
 
 def build_excel_response(title: str, headers: list[str], rows: list[list[object]], filename: str) -> HttpResponse:
@@ -311,6 +336,57 @@ def build_weekly_balance_report_rows(lines: list[ScheduleLine]) -> list[list[obj
         ]
         for line in lines
     ]
+
+
+def build_inventory_report_entries(lines: list[ScheduleLine]) -> list[InventoryReportEntry]:
+    entries: list[InventoryReportEntry] = []
+    for line in lines:
+        schedule = getattr(line, "schedule_scope", None) or getattr(line, "schedule", None)
+        if schedule is None or not schedule.week_start_date:
+            continue
+
+        for index in range(7):
+            if not bool(getattr(line, f"day_{index}_inventory", False)):
+                continue
+
+            entries.append(
+                InventoryReportEntry(
+                    site_code=(schedule.site.code or "").strip(),
+                    site_name=(schedule.site.name or "").strip(),
+                    inventory_date=schedule.week_start_date + timedelta(days=index),
+                    employee_identifier=(line.employee_identifier or "").strip(),
+                    employee_name=(line.employee_name or "").strip(),
+                    job_role_name=(line.job_role_name or "SIN CARGO").strip() or "SIN CARGO",
+                )
+            )
+
+    return sorted(
+        entries,
+        key=lambda entry: (
+            entry.inventory_date,
+            entry.site_code,
+            entry.job_role_name.casefold(),
+            entry.employee_name.casefold(),
+            entry.employee_identifier,
+        ),
+    )
+
+
+def build_inventory_report_rows(lines: list[ScheduleLine]) -> list[list[object]]:
+    rows: list[list[object]] = []
+    for entry in build_inventory_report_entries(lines):
+        rows.append(
+            [
+                entry.inventory_date,
+                SPANISH_MONTH_NAMES[entry.inventory_date.month],
+                entry.site_name,
+                entry.employee_identifier,
+                entry.employee_name,
+                entry.job_role_name,
+                "",
+            ]
+        )
+    return rows
 
 
 def get_latest_visible_lines_by_employee(user) -> list[ScheduleLine]:

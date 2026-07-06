@@ -1159,6 +1159,75 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertContains(response, "Filtrar por cargo")
         self.assertContains(response, '<option value="Carnicero">Carnicero</option>', html=False)
 
+    def test_schedule_edit_shows_inventory_checkbox(self):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-inventory-checkbox="true"', html=False)
+        self.assertContains(response, "Inventario")
+
+    def test_schedule_edit_persists_inventory_selection_in_database(self):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "status": WeeklySchedule.Status.DRAFT,
+                "notes": "Inventario semanal",
+                "lines-TOTAL_FORMS": "1",
+                "lines-INITIAL_FORMS": "1",
+                "lines-MIN_NUM_FORMS": "0",
+                "lines-MAX_NUM_FORMS": "1000",
+                "lines-0-id": str(self.line.pk),
+                "lines-0-day_0_shift_1": self.line.day_0_shift_1,
+                "lines-0-day_0_shift_2": self.line.day_0_shift_2,
+                "lines-0-day_0_compensation_mode": "",
+                "lines-0-day_0_compensation_hours": "",
+                "lines-0-day_1_shift_1": "",
+                "lines-0-day_1_shift_2": "",
+                "lines-0-day_1_compensation_mode": "",
+                "lines-0-day_1_compensation_hours": "",
+                "lines-0-day_1_inventory": "on",
+                "lines-0-day_2_shift_1": "",
+                "lines-0-day_2_shift_2": "",
+                "lines-0-day_2_compensation_mode": "",
+                "lines-0-day_2_compensation_hours": "",
+                "lines-0-day_3_shift_1": "",
+                "lines-0-day_3_shift_2": "",
+                "lines-0-day_3_compensation_mode": "",
+                "lines-0-day_3_compensation_hours": "",
+                "lines-0-day_4_shift_1": "",
+                "lines-0-day_4_shift_2": "",
+                "lines-0-day_4_compensation_mode": "",
+                "lines-0-day_4_compensation_hours": "",
+                "lines-0-day_5_shift_1": "",
+                "lines-0-day_5_shift_2": "",
+                "lines-0-day_5_compensation_mode": "",
+                "lines-0-day_5_compensation_hours": "",
+                "lines-0-day_6_shift_1": "",
+                "lines-0-day_6_shift_2": "",
+                "lines-0-day_6_compensation_mode": "",
+                "lines-0-day_6_compensation_hours": "",
+                "lines-0-manual_day_adjustment": "",
+                "lines-0-manual_hour_adjustment": "",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.line.refresh_from_db()
+        self.assertTrue(self.line.day_1_inventory)
+        self.assertFalse(self.line.day_0_inventory)
+        self.assertEqual(self.line.inventory_days_total(), 1)
+        self.assertIn("08/06/2026", self.line.inventory_days_summary())
+
     def test_site_user_can_remove_schedule_line(self):
         self.client.login(username="operador_delete", password="secret")
 

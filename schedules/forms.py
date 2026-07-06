@@ -292,6 +292,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
     SHIFT_2_FIELDS = [f"day_{index}_shift_2" for index in range(7)]
     COMPENSATION_MODE_FIELDS = [f"day_{index}_compensation_mode" for index in range(7)]
     COMPENSATION_HOURS_FIELDS = [f"day_{index}_compensation_hours" for index in range(7)]
+    INVENTORY_FIELDS = [f"day_{index}_inventory" for index in range(7)]
     manual_day_adjustment = forms.IntegerField(
         required=False,
         widget=IntegerNumberInput(attrs={"step": "1", "class": "input input--numeric input--days"}),
@@ -309,30 +310,37 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             "day_0_shift_2",
             "day_0_compensation_mode",
             "day_0_compensation_hours",
+            "day_0_inventory",
             "day_1_shift_1",
             "day_1_shift_2",
             "day_1_compensation_mode",
             "day_1_compensation_hours",
+            "day_1_inventory",
             "day_2_shift_1",
             "day_2_shift_2",
             "day_2_compensation_mode",
             "day_2_compensation_hours",
+            "day_2_inventory",
             "day_3_shift_1",
             "day_3_shift_2",
             "day_3_compensation_mode",
             "day_3_compensation_hours",
+            "day_3_inventory",
             "day_4_shift_1",
             "day_4_shift_2",
             "day_4_compensation_mode",
             "day_4_compensation_hours",
+            "day_4_inventory",
             "day_5_shift_1",
             "day_5_shift_2",
             "day_5_compensation_mode",
             "day_5_compensation_hours",
+            "day_5_inventory",
             "day_6_shift_1",
             "day_6_shift_2",
             "day_6_compensation_mode",
             "day_6_compensation_hours",
+            "day_6_inventory",
             "manual_day_adjustment",
             "manual_hour_adjustment",
         ]
@@ -420,12 +428,25 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 }
             )
 
+        for field_name in self.INVENTORY_FIELDS:
+            self.fields[field_name].required = False
+            self.fields[field_name].widget = forms.CheckboxInput(
+                attrs={
+                    "class": "inventory-checkbox",
+                    "data-inventory-checkbox": "true",
+                }
+            )
+
         self.balance_snapshot = get_schedule_line_balance_snapshot(self.instance)
         self.compact_alert_summary = get_schedule_line_compact_alert_summary(
             self.instance,
             balance_snapshot=self.balance_snapshot,
         )
         self.apply_style()
+
+        for field_name in self.INVENTORY_FIELDS:
+            self.fields[field_name].widget.attrs["class"] = "inventory-checkbox"
+            self.fields[field_name].widget.attrs["data-inventory-checkbox"] = "true"
 
         if not self.show_admin_fields:
             self.fields["manual_day_adjustment"].widget = forms.HiddenInput()

@@ -80,6 +80,7 @@ class WeeklySchedule(TimeStampedModel):
                     "shift_2_name": f"day_{index}_shift_2",
                     "compensation_mode_name": f"day_{index}_compensation_mode",
                     "compensation_hours_name": f"day_{index}_compensation_hours",
+                    "inventory_name": f"day_{index}_inventory",
                     "hours_attr": f"day_{index}_hours",
                 }
             )
@@ -111,36 +112,43 @@ class ScheduleLine(TimeStampedModel):
     day_0_compensation_mode = models.CharField(max_length=20, choices=CompensationMode.choices, blank=True)
     day_0_compensation_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     day_0_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    day_0_inventory = models.BooleanField(default=False)
     day_1_shift_1 = models.CharField(max_length=40, blank=True)
     day_1_shift_2 = models.CharField(max_length=40, blank=True)
     day_1_compensation_mode = models.CharField(max_length=20, choices=CompensationMode.choices, blank=True)
     day_1_compensation_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     day_1_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    day_1_inventory = models.BooleanField(default=False)
     day_2_shift_1 = models.CharField(max_length=40, blank=True)
     day_2_shift_2 = models.CharField(max_length=40, blank=True)
     day_2_compensation_mode = models.CharField(max_length=20, choices=CompensationMode.choices, blank=True)
     day_2_compensation_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     day_2_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    day_2_inventory = models.BooleanField(default=False)
     day_3_shift_1 = models.CharField(max_length=40, blank=True)
     day_3_shift_2 = models.CharField(max_length=40, blank=True)
     day_3_compensation_mode = models.CharField(max_length=20, choices=CompensationMode.choices, blank=True)
     day_3_compensation_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     day_3_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    day_3_inventory = models.BooleanField(default=False)
     day_4_shift_1 = models.CharField(max_length=40, blank=True)
     day_4_shift_2 = models.CharField(max_length=40, blank=True)
     day_4_compensation_mode = models.CharField(max_length=20, choices=CompensationMode.choices, blank=True)
     day_4_compensation_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     day_4_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    day_4_inventory = models.BooleanField(default=False)
     day_5_shift_1 = models.CharField(max_length=40, blank=True)
     day_5_shift_2 = models.CharField(max_length=40, blank=True)
     day_5_compensation_mode = models.CharField(max_length=20, choices=CompensationMode.choices, blank=True)
     day_5_compensation_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     day_5_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    day_5_inventory = models.BooleanField(default=False)
     day_6_shift_1 = models.CharField(max_length=40, blank=True)
     day_6_shift_2 = models.CharField(max_length=40, blank=True)
     day_6_compensation_mode = models.CharField(max_length=20, choices=CompensationMode.choices, blank=True)
     day_6_compensation_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     day_6_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    day_6_inventory = models.BooleanField(default=False)
 
     total_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     overtime_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
@@ -170,6 +178,26 @@ class ScheduleLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.employee_identifier} - {self.employee_name}"
+
+    def get_inventory_day_indexes(self) -> list[int]:
+        return [index for index in range(7) if bool(getattr(self, f"day_{index}_inventory", False))]
+
+    def inventory_days_total(self) -> int:
+        return len(self.get_inventory_day_indexes())
+    inventory_days_total.short_description = "Dias inventario"
+
+    def inventory_days_summary(self) -> str:
+        day_indexes = self.get_inventory_day_indexes()
+        if not day_indexes:
+            return "Sin inventario"
+        if not self.schedule_id or not self.schedule.week_start_date:
+            return f"{len(day_indexes)} dia(s)"
+        selected_dates = [
+            (self.schedule.week_start_date + timedelta(days=index)).strftime("%d/%m/%Y")
+            for index in day_indexes
+        ]
+        return ", ".join(selected_dates)
+    inventory_days_summary.short_description = "Fechas inventario"
 
 class EmployeeInitialBalance(TimeStampedModel):
     employee_identifier = models.CharField(max_length=30, unique=True)

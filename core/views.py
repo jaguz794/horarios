@@ -1,15 +1,18 @@
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import Count
 from django.core.exceptions import PermissionDenied
+from django.http import HttpResponse
 from django.views.generic import ListView, TemplateView
 
 from core.access import get_accessible_schedules_queryset, get_accessible_sites_queryset, user_can_manage_all_sites
 from core.models import Site, SystemConfiguration
 from schedules.forms import ReportRangeForm, WeeklyBalanceReportForm
+from schedules.inventory_pdf import build_inventory_week_pdf_bytes, get_inventory_report_filename
 from schedules.models import WeeklySchedule
 from schedules.reporting import (
     build_balance_role_breakdown,
     build_excel_response,
+    build_inventory_report_rows,
     build_night_bonus_report_rows,
     build_overtime_balance_report_rows,
     build_special_days_report_rows,
@@ -175,18 +178,34 @@ class ReportHubView(LoginRequiredMixin, TemplateView):
                     "recargos_nocturnos.xlsx",
                 )
 
-        if report_type == "weekly_balance":
+        if report_type in {"weekly_balance", "inventory_excel", "inventory_pdf"}:
             if weekly_form.is_valid():
                 site = weekly_form.cleaned_data.get("site")
                 week_start_date = weekly_form.cleaned_data["week_start_date"]
                 lines = get_weekly_balance_lines(request.user, week_start_date, site=site)
-                rows = build_weekly_balance_report_rows(lines)
-                return build_excel_response(
-                    "ConsolidadoSemanal",
-                    ["Sede", "Cargo", "Cedula", "Nombre", "Saldo acumulado (h equivalentes)", "Recargos nocturnos"],
-                    rows,
-                    "consolidado_semanal_horarios.xlsx",
+                if report_type == "weekly_balance":
+                    rows = build_weekly_balance_report_rows(lines)
+                    return build_excel_response(
+                        "ConsolidadoSemanal",
+                        ["Sede", "Cargo", "Cedula", "Nombre", "Saldo acumulado (h equivalentes)", "Recargos nocturnos"],
+                        rows,
+                        "consolidado_semanal_horarios.xlsx",
+                    )
+                if report_type == "inventory_excel":
+                    rows = build_inventory_report_rows(lines)
+                    return build_excel_response(
+                        "InventarioSemanal",
+                        ["Fecha inventario", "Mes", "Sede", "Cedula", "Nombre", "Cargo", "Valor"],
+                        rows,
+                        "inventario_semanal.xlsx",
+                    )
+
+                pdf_bytes = build_inventory_week_pdf_bytes(lines, week_start_date)
+                response = HttpResponse(pdf_bytes, content_type="application/pdf")
+                response["Content-Disposition"] = (
+                    f'attachment; filename="{get_inventory_report_filename(week_start_date)}"'
                 )
+                return response
 
         return self.render_to_response(
             self.get_context_data(
