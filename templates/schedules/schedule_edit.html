@@ -72,7 +72,7 @@
   </details>
   {% endif %}
 
-  <form method="post" class="stack-form">
+  <form method="post" class="stack-form" data-schedule-form="true" data-autosave-enabled="{% if not schedule_closed %}true{% else %}false{% endif %}">
     {% csrf_token %}
     {{ line_formset.management_form }}
     <div class="field-grid compact-grid">
@@ -300,7 +300,9 @@
     </div>
 
     {% if not schedule_closed %}
-    <button type="submit" class="primary-button">Guardar cambios</button>
+    <div class="schedule-actions-bar">
+      <button type="submit" class="primary-button" data-manual-save-button="true">Guardar cambios</button>
+    </div>
     {% endif %}
   </form>
 </section>

@@ -5,7 +5,8 @@ document.addEventListener("DOMContentLoaded", () => {
 function initScheduleCalculations() {
   const shiftMetricsNode = document.getElementById("shift-metrics-data");
   const scheduleTable = document.querySelector(".schedule-table");
-  if (!shiftMetricsNode || !scheduleTable) {
+  const scheduleForm = document.querySelector('[data-schedule-form="true"]');
+  if (!shiftMetricsNode || !scheduleTable || !scheduleForm) {
     return;
   }
 
@@ -19,6 +20,12 @@ function initScheduleCalculations() {
   const moneyHourModes = new Set(["pay_money", "pay_money_hours"]);
   const moneyDayModes = new Set(["pay_money_day"]);
   const compensationModesWithHours = new Set(["pay_hours", ...moneyHourModes]);
+  const autosaveEnabled = scheduleForm.dataset.autosaveEnabled === "true";
+  const csrfToken = scheduleForm.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
+  let autosaveDirty = false;
+  let autosaveInFlight = false;
+  let manualSubmitInProgress = false;
+  let lastInteractionAt = Date.now();
 
   const parseDecimal = (value) => {
     const normalized = String(value ?? "").trim().replace(",", ".");
@@ -243,6 +250,77 @@ function initScheduleCalculations() {
   };
 
   const rows = document.querySelectorAll(".schedule-row");
+
+  const markAutosaveDirty = () => {
+    if (!autosaveEnabled || scheduleClosed) {
+      return;
+    }
+    autosaveDirty = true;
+    lastInteractionAt = Date.now();
+  };
+
+  const autosaveScheduleForm = async () => {
+    if (!autosaveEnabled || scheduleClosed || manualSubmitInProgress || autosaveInFlight || !autosaveDirty) {
+      return;
+    }
+    if (Date.now() - lastInteractionAt < 1500) {
+      return;
+    }
+
+    autosaveInFlight = true;
+    try {
+      const formData = new FormData(scheduleForm);
+      const response = await fetch(scheduleForm.action || window.location.href, {
+        method: "POST",
+        headers: {
+          "X-Requested-With": "XMLHttpRequest",
+          "X-Schedule-Autosave": "true",
+          "X-CSRFToken": csrfToken,
+          Accept: "application/json",
+        },
+        body: formData,
+        credentials: "same-origin",
+      });
+
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json();
+      if (payload?.ok) {
+        autosaveDirty = false;
+      }
+    } catch (_error) {
+      // El autoguardado es silencioso: si falla, se reintentara en el siguiente ciclo.
+    } finally {
+      autosaveInFlight = false;
+    }
+  };
+
+  scheduleForm.addEventListener(
+    "input",
+    () => {
+      markAutosaveDirty();
+    },
+    true,
+  );
+  scheduleForm.addEventListener(
+    "change",
+    () => {
+      markAutosaveDirty();
+    },
+    true,
+  );
+  scheduleForm.addEventListener("submit", () => {
+    manualSubmitInProgress = true;
+  });
+
+  if (autosaveEnabled && !scheduleClosed) {
+    window.setInterval(() => {
+      autosaveScheduleForm();
+    }, 30000);
+  }
+
   rows.forEach((row) => {
     const weeklyTarget = parseDecimal(row.dataset.weeklyTarget);
     const dailyMax = parseDecimal(row.dataset.dailyMax);
@@ -634,23 +712,20 @@ function initScheduleCalculations() {
   });
 
   const roleFilter = document.querySelector("[data-role-filter]");
-  const scheduleForm = document.querySelector(".stack-form");
-  if (!roleFilter) {
-    return;
-  }
+  if (roleFilter) {
+    const applyRoleFilter = () => {
+      const selectedRole = String(roleFilter.value || "").trim().toLowerCase();
+      rows.forEach((row) => {
+        const rowRole = String(row.dataset.roleName || "").trim().toLowerCase();
+        row.hidden = Boolean(selectedRole) && rowRole !== selectedRole;
+      });
+    };
 
-  const applyRoleFilter = () => {
-    const selectedRole = String(roleFilter.value || "").trim().toLowerCase();
-    rows.forEach((row) => {
-      const rowRole = String(row.dataset.roleName || "").trim().toLowerCase();
-      row.hidden = Boolean(selectedRole) && rowRole !== selectedRole;
+    roleFilter.addEventListener("change", applyRoleFilter);
+    scheduleForm.addEventListener("submit", () => {
+      roleFilter.value = "";
+      applyRoleFilter();
     });
-  };
-
-  roleFilter.addEventListener("change", applyRoleFilter);
-  scheduleForm?.addEventListener("submit", () => {
-    roleFilter.value = "";
     applyRoleFilter();
-  });
-  applyRoleFilter();
+  }
 }

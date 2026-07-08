@@ -2,7 +2,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.views import View
@@ -141,6 +141,28 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
     def can_reopen_published_schedule(self, schedule) -> bool:
         return user_can_manage_all_sites(self.request.user) and schedule.status == WeeklySchedule.Status.PUBLISHED
 
+    def is_autosave_request(self, request) -> bool:
+        return request.headers.get("X-Schedule-Autosave", "").lower() == "true"
+
+    def build_autosave_error_payload(self, schedule_form, line_formset) -> dict:
+        line_errors = {}
+        for form in line_formset.forms:
+            if not form.errors and not form.non_field_errors():
+                continue
+            form_errors = form.errors.get_json_data()
+            non_field_errors = [str(error) for error in form.non_field_errors()]
+            if non_field_errors:
+                form_errors["__all__"] = [{"message": error} for error in non_field_errors]
+            line_errors[form.prefix] = form_errors
+        return {
+            "ok": False,
+            "errors": {
+                "schedule": schedule_form.errors.get_json_data(),
+                "lines": line_errors,
+                "non_form": [str(error) for error in line_formset.non_form_errors()],
+            },
+        }
+
     def get_manual_add_form(
         self,
         schedule,
@@ -183,10 +205,19 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
 
     def post(self, request, *args, **kwargs):
         schedule = self.get_schedule()
+        autosave_request = self.is_autosave_request(request)
         if not schedule.is_closed:
             purge_blacklisted_lines_from_schedule(schedule)
             schedule.refresh_from_db()
         if schedule.is_closed:
+            if autosave_request:
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "message": "El horario publicado esta cerrado y no admite autoguardado.",
+                    },
+                    status=409,
+                )
             messages.error(request, "El horario publicado esta cerrado y ya no admite modificaciones.")
             return redirect("schedules:edit", pk=schedule.pk)
         remove_line_id = request.POST.get("remove_line_id", "").strip()
@@ -306,7 +337,9 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             )
             with transaction.atomic():
                 updated_schedule = schedule_form.save(commit=False)
-                if updated_schedule.status == WeeklySchedule.Status.PUBLISHED:
+                if updated_schedule.status == WeeklySchedule.Status.PUBLISHED and not (
+                    autosave_request and schedule.admin_edit_enabled
+                ):
                     updated_schedule.admin_edit_enabled = False
                 updated_schedule.updated_by = request.user
                 updated_schedule.save()
@@ -314,16 +347,30 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
                 if touched_employee_ids:
                     rebuild_balances_for_employees_from_week(updated_schedule.week_start_date, touched_employee_ids)
                 updated_schedule.refresh_from_db()
-                if updated_schedule.status == WeeklySchedule.Status.PUBLISHED:
+                if updated_schedule.status == WeeklySchedule.Status.PUBLISHED and not autosave_request:
                     generate_and_store_schedule_settlement(
                         updated_schedule,
                         generated_by=request.user,
                         rebuild_balances=False,
                     )
 
+            if autosave_request:
+                return JsonResponse(
+                    {
+                        "ok": True,
+                        "saved_at": updated_schedule.updated_at.isoformat() if updated_schedule.updated_at else "",
+                        "status": updated_schedule.status,
+                        "closed": updated_schedule.is_closed,
+                    }
+                )
             messages.success(request, "Horario actualizado correctamente.")
             return redirect("schedules:edit", pk=schedule.pk)
 
+        if autosave_request:
+            return JsonResponse(
+                self.build_autosave_error_payload(schedule_form, line_formset),
+                status=400,
+            )
         messages.error(request, "Hay campos por revisar antes de guardar.")
         return self.render_to_response(
             self.build_context(

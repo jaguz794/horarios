@@ -996,6 +996,31 @@ class ScheduleDeleteViewTests(TestCase):
         admin_access.role = UserSiteAccess.Role.ADMIN
         admin_access.save()
 
+    def build_schedule_form_payload(self, *, status=None, notes="", line=None, extra=None):
+        active_line = line or self.line
+        payload = {
+            "status": status or self.schedule.status or WeeklySchedule.Status.DRAFT,
+            "notes": notes,
+            "lines-TOTAL_FORMS": "1",
+            "lines-INITIAL_FORMS": "1",
+            "lines-MIN_NUM_FORMS": "0",
+            "lines-MAX_NUM_FORMS": "1000",
+            "lines-0-id": str(active_line.pk),
+        }
+        for index in range(7):
+            payload[f"lines-0-day_{index}_shift_1"] = getattr(active_line, f"day_{index}_shift_1", "") or ""
+            payload[f"lines-0-day_{index}_shift_2"] = getattr(active_line, f"day_{index}_shift_2", "") or ""
+            payload[f"lines-0-day_{index}_compensation_mode"] = getattr(
+                active_line,
+                f"day_{index}_compensation_mode",
+                "",
+            ) or ""
+            compensation_hours = getattr(active_line, f"day_{index}_compensation_hours", "") or ""
+            payload[f"lines-0-day_{index}_compensation_hours"] = str(compensation_hours) if compensation_hours else ""
+        if extra:
+            payload.update(extra)
+        return payload
+
     def test_site_user_cannot_delete_schedule(self):
         self.client.login(username="operador_delete", password="secret")
 
@@ -1222,46 +1247,15 @@ class ScheduleDeleteViewTests(TestCase):
 
         response = self.client.post(
             reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
-            {
-                "status": WeeklySchedule.Status.DRAFT,
-                "notes": "Inventario semanal",
-                "lines-TOTAL_FORMS": "1",
-                "lines-INITIAL_FORMS": "1",
-                "lines-MIN_NUM_FORMS": "0",
-                "lines-MAX_NUM_FORMS": "1000",
-                "lines-0-id": str(self.line.pk),
-                "lines-0-day_0_shift_1": self.line.day_0_shift_1,
-                "lines-0-day_0_shift_2": self.line.day_0_shift_2,
-                "lines-0-day_0_compensation_mode": "",
-                "lines-0-day_0_compensation_hours": "",
-                "lines-0-day_1_shift_1": "",
-                "lines-0-day_1_shift_2": "",
-                "lines-0-day_1_compensation_mode": "",
-                "lines-0-day_1_compensation_hours": "",
-                "lines-0-day_1_inventory": "on",
-                "lines-0-day_2_shift_1": "",
-                "lines-0-day_2_shift_2": "",
-                "lines-0-day_2_compensation_mode": "",
-                "lines-0-day_2_compensation_hours": "",
-                "lines-0-day_3_shift_1": "",
-                "lines-0-day_3_shift_2": "",
-                "lines-0-day_3_compensation_mode": "",
-                "lines-0-day_3_compensation_hours": "",
-                "lines-0-day_4_shift_1": "",
-                "lines-0-day_4_shift_2": "",
-                "lines-0-day_4_compensation_mode": "",
-                "lines-0-day_4_compensation_hours": "",
-                "lines-0-day_5_shift_1": "",
-                "lines-0-day_5_shift_2": "",
-                "lines-0-day_5_compensation_mode": "",
-                "lines-0-day_5_compensation_hours": "",
-                "lines-0-day_6_shift_1": "",
-                "lines-0-day_6_shift_2": "",
-                "lines-0-day_6_compensation_mode": "",
-                "lines-0-day_6_compensation_hours": "",
-                "lines-0-manual_day_adjustment": "",
-                "lines-0-manual_hour_adjustment": "",
-            },
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.DRAFT,
+                notes="Inventario semanal",
+                extra={
+                    "lines-0-day_1_inventory": "on",
+                    "lines-0-manual_day_adjustment": "",
+                    "lines-0-manual_hour_adjustment": "",
+                },
+            ),
             SERVER_NAME="127.0.0.1",
             SERVER_PORT="8000",
         )
@@ -1272,6 +1266,29 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertFalse(self.line.day_0_inventory)
         self.assertEqual(self.line.inventory_days_total(), 1)
         self.assertIn("08/06/2026", self.line.inventory_days_summary())
+
+    def test_schedule_edit_autosaves_without_redirect(self):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.DRAFT,
+                notes="Autoguardado silencioso",
+                extra={"lines-0-day_1_inventory": "on"},
+            ),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            HTTP_X_SCHEDULE_AUTOSAVE="true",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ok"], True)
+        self.line.refresh_from_db()
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.notes, "Autoguardado silencioso")
+        self.assertTrue(self.line.day_1_inventory)
 
     def test_site_user_can_remove_schedule_line(self):
         self.client.login(username="operador_delete", password="secret")
@@ -1577,6 +1594,31 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(self.schedule.notes, "Revisado por admin")
         self.assertFalse(self.schedule.admin_edit_enabled)
         self.assertTrue(self.schedule.is_closed)
+
+    def test_autosave_keeps_reopened_published_schedule_editable(self):
+        self.schedule.status = WeeklySchedule.Status.PUBLISHED
+        self.schedule.admin_edit_enabled = True
+        self.schedule.save()
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.PUBLISHED,
+                notes="Autoguardado en horario reabierto",
+            ),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            HTTP_X_SCHEDULE_AUTOSAVE="true",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ok"], True)
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.notes, "Autoguardado en horario reabierto")
+        self.assertTrue(self.schedule.admin_edit_enabled)
+        self.assertFalse(self.schedule.is_closed)
 
     def test_site_user_cannot_unlock_published_schedule(self):
         self.schedule.status = WeeklySchedule.Status.PUBLISHED
