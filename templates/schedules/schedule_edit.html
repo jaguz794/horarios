@@ -13,9 +13,17 @@
       <p>Primer dia configurado: {{ schedule.get_first_day_index_display }}.</p>
       {% if schedule_closed %}
       <p class="closed-note">Este horario esta publicado y quedo cerrado para edicion.</p>
+      {% elif schedule.status == "published" %}
+      <p class="closed-note">Este horario sigue publicado, pero administracion lo habilito temporalmente para edicion.</p>
       {% endif %}
     </div>
     <div class="header-actions">
+      {% if can_reopen_published and schedule_closed %}
+      <form method="post" action="{% url 'schedules:unlock' schedule.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="ghost-button">Habilitar edicion</button>
+      </form>
+      {% endif %}
       {% if not schedule_closed %}
       <form method="post" action="{% url 'schedules:refresh' schedule.pk %}">
         {% csrf_token %}

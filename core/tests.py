@@ -45,7 +45,9 @@ class UserSiteAccessTests(TestCase):
             get_accessible_sites_queryset(user).order_by("code").values_list("code", flat=True)
         )
 
-        self.assertEqual(visible_codes, ["007", "008"])
+        self.assertIn("007", visible_codes)
+        self.assertIn("008", visible_codes)
+        self.assertIn(Site.PERSONAL_VARIO_CODE, visible_codes)
         self.assertTrue(user_can_manage_all_sites(user))
 
     def test_user_without_assigned_sites_sees_none(self):
@@ -56,6 +58,25 @@ class UserSiteAccessTests(TestCase):
         )
 
         self.assertEqual(visible_codes, [])
+
+    def test_site_user_never_sees_admin_only_site(self):
+        personal_vario, _ = Site.objects.get_or_create(
+            code=Site.PERSONAL_VARIO_CODE,
+            defaults={
+                "name": Site.PERSONAL_VARIO_NAME,
+                "admin_only": True,
+                "is_active": True,
+            },
+        )
+        user = User.objects.create_user(username="operador_vario", password="secret")
+        access = UserSiteAccess.objects.get(user=user)
+        access.sites.add(personal_vario)
+
+        visible_codes = list(
+            get_accessible_sites_queryset(user).order_by("code").values_list("code", flat=True)
+        )
+
+        self.assertNotIn(Site.PERSONAL_VARIO_CODE, visible_codes)
 
 
 class DashboardViewTests(TestCase):
@@ -185,10 +206,9 @@ class SiteOrderingTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            list(response.context["sites"].values_list("code", flat=True)),
-            ["001", "002", "010"],
-        )
+        visible_codes = list(response.context["sites"].values_list("code", flat=True))
+        self.assertEqual(visible_codes[:3], ["001", "002", "010"])
+        self.assertIn(Site.PERSONAL_VARIO_CODE, visible_codes)
 
     def test_admin_sites_field_orders_codes_ascending(self):
         Site.objects.create(code="010", name="Diez")
@@ -201,10 +221,9 @@ class SiteOrderingTests(TestCase):
             request=None,
         )
 
-        self.assertEqual(
-            list(form_field.queryset.values_list("code", flat=True)),
-            ["001", "002", "010"],
-        )
+        visible_codes = list(form_field.queryset.values_list("code", flat=True))
+        self.assertEqual(visible_codes[:3], ["001", "002", "010"])
+        self.assertIn(Site.PERSONAL_VARIO_CODE, visible_codes)
 
 
 class ReportHubViewTests(TestCase):

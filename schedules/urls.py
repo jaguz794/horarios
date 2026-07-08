@@ -11,6 +11,7 @@ from schedules.views import (
     ScheduleRefreshView,
     ScheduleSettlementDownloadView,
     ScheduleSettlementHubView,
+    ScheduleUnlockView,
 )
 
 urlpatterns = [
@@ -24,4 +25,5 @@ urlpatterns = [
     path("<int:pk>/editar/", ScheduleEditView.as_view(), name="edit"),
     path("<int:pk>/eliminar/", ScheduleDeleteView.as_view(), name="delete"),
     path("<int:pk>/recargar-personal/", ScheduleRefreshView.as_view(), name="refresh"),
+    path("<int:pk>/habilitar-edicion/", ScheduleUnlockView.as_view(), name="unlock"),
 ]

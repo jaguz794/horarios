@@ -21,8 +21,8 @@ class SystemConfigurationAdmin(admin.ModelAdmin):
 
 @admin.register(Site)
 class SiteAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "is_active")
-    list_filter = ("is_active",)
+    list_display = ("code", "name", "admin_only", "is_active")
+    list_filter = ("admin_only", "is_active")
     search_fields = ("code", "name")
     ordering = ("code",)
 

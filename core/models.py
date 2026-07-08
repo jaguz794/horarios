@@ -14,12 +14,16 @@ class TimeStampedModel(models.Model):
 
 
 class Site(TimeStampedModel):
+    PERSONAL_VARIO_CODE = "VARIOS"
+    PERSONAL_VARIO_NAME = "personal_vario"
+
     code = models.CharField(max_length=10, unique=True)
     name = models.CharField(max_length=120)
     legacy_name = models.CharField(max_length=120, blank=True)
     group_code = models.CharField(max_length=10, blank=True)
     city = models.CharField(max_length=60, blank=True)
     is_active = models.BooleanField(default=True)
+    admin_only = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["code"]
@@ -29,6 +33,10 @@ class Site(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
+
+    @property
+    def is_personal_vario(self) -> bool:
+        return (self.code or "").strip().upper() == self.PERSONAL_VARIO_CODE
 
 
 class OperationalStaffCache(TimeStampedModel):

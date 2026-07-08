@@ -23,6 +23,7 @@ from schedules.services import (
     get_schedule_line_compact_alert_summary,
     resolve_compensation_usage,
     resolve_shift_metrics,
+    schedule_accepts_blacklisted_staff,
 )
 
 NOON_TIME = datetime.strptime("12:00", "%H:%M").time()
@@ -238,7 +239,11 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
             employee_identifier=value,
         ).exists():
             raise forms.ValidationError("Ese numero de documento ya existe en este horario.")
-        if is_employee_blacklisted(value):
+        if schedule_accepts_blacklisted_staff(self.schedule) and not is_employee_blacklisted(value):
+            raise forms.ValidationError(
+                "Para cargar personal_vario primero debes registrar la cedula en la lista negra."
+            )
+        if is_employee_blacklisted(value) and not schedule_accepts_blacklisted_staff(self.schedule):
             raise forms.ValidationError(
                 "Ese numero de documento esta bloqueado en la lista negra y no se puede cargar en horarios."
             )

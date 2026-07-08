@@ -30,6 +30,7 @@ from schedules.services import (
     is_employee_blacklisted,
     purge_blacklisted_lines_from_schedule,
     rebuild_balances_for_employees_from_week,
+    schedule_accepts_blacklisted_staff,
     save_schedule_line_with_balances,
     sync_schedule_from_legacy,
 )
@@ -137,6 +138,9 @@ class ScheduleLoadView(LoginRequiredMixin, FormView):
 class ScheduleEditView(LoginRequiredMixin, TemplateView):
     template_name = "schedules/schedule_edit.html"
 
+    def can_reopen_published_schedule(self, schedule) -> bool:
+        return user_can_manage_all_sites(self.request.user) and schedule.status == WeeklySchedule.Status.PUBLISHED
+
     def get_manual_add_form(
         self,
         schedule,
@@ -211,7 +215,12 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
                     request,
                     "Ingresa un numero de documento valido para consultar el tercero.",
                 )
-            elif is_employee_blacklisted(identifier):
+            elif schedule_accepts_blacklisted_staff(schedule) and not is_employee_blacklisted(identifier):
+                messages.error(
+                    request,
+                    "Para cargar personal_vario primero debes registrar la cedula en la lista negra.",
+                )
+            elif is_employee_blacklisted(identifier) and not schedule_accepts_blacklisted_staff(schedule):
                 messages.error(
                     request,
                     "Ese numero de documento esta bloqueado en la lista negra y no puede cargarse en horarios.",
@@ -297,6 +306,8 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             )
             with transaction.atomic():
                 updated_schedule = schedule_form.save(commit=False)
+                if updated_schedule.status == WeeklySchedule.Status.PUBLISHED:
+                    updated_schedule.admin_edit_enabled = False
                 updated_schedule.updated_by = request.user
                 updated_schedule.save()
                 line_formset.save()
@@ -356,6 +367,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             "manual_add_open": manual_add_form.is_bound,
             "role_filter_options": role_filter_options,
             "schedule_closed": schedule_closed,
+            "can_reopen_published": self.can_reopen_published_schedule(schedule),
         }
 
 
@@ -372,6 +384,27 @@ class ScheduleRefreshView(LoginRequiredMixin, View):
             f"Personal actualizado. Nuevos: {created_count}. Actualizados: {updated_count}.",
         )
         return redirect(reverse("schedules:edit", kwargs={"pk": schedule.pk}))
+
+
+class ScheduleUnlockView(LoginRequiredMixin, View):
+    def post(self, request, *args, **kwargs):
+        if not user_can_manage_all_sites(request.user):
+            raise PermissionDenied("Solo administracion puede habilitar edicion sobre horarios publicados.")
+
+        queryset = get_accessible_schedules_queryset(request.user, WeeklySchedule.objects.select_related("site"))
+        schedule = get_object_or_404(queryset, pk=self.kwargs["pk"])
+        if schedule.status != WeeklySchedule.Status.PUBLISHED:
+            messages.info(request, "Solo los horarios publicados pueden habilitarse nuevamente para edicion.")
+            return redirect("schedules:edit", pk=schedule.pk)
+
+        schedule.admin_edit_enabled = True
+        schedule.updated_by = request.user
+        schedule.save(update_fields=["admin_edit_enabled", "updated_by", "updated_at"])
+        messages.success(
+            request,
+            "Horario publicado habilitado temporalmente para edicion. Cuando vuelvas a guardarlo en publicado, se cerrara otra vez.",
+        )
+        return redirect("schedules:edit", pk=schedule.pk)
 
 
 class ScheduleDeleteView(LoginRequiredMixin, View):

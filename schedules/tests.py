@@ -12,7 +12,7 @@ from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from openpyxl import Workbook, load_workbook
 
-from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
+from core.models import JobRole, OperationalStaffCache, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
 from legacy.services import OperationalStaffingRecord
 from schedules.forms import ScheduleLineForm, ScheduleLoadForm
 from schedules.models import (
@@ -917,11 +917,56 @@ class ScheduleCalculationTests(TestCase):
             ScheduleLine.objects.filter(schedule=self.schedule, employee_identifier="99887766").exists()
         )
 
+    def test_sync_schedule_loads_blacklisted_staff_into_personal_vario(self):
+        personal_vario, _ = Site.objects.get_or_create(
+            code=Site.PERSONAL_VARIO_CODE,
+            defaults={
+                "name": Site.PERSONAL_VARIO_NAME,
+                "admin_only": True,
+                "is_active": True,
+            },
+        )
+        OperationalStaffCache.objects.create(
+            site_code="007",
+            employee_identifier="36178712",
+            employee_name="Persona Bloqueada",
+            department_code="TR",
+            department_name="TRANSPORTE",
+            role_code="COND",
+            role_name="CONDUCTOR",
+        )
+        EmployeeScheduleBlacklist.objects.create(
+            employee_identifier="36178712",
+            employee_name="Persona Bloqueada",
+        )
+        schedule = WeeklySchedule.objects.create(
+            site=personal_vario,
+            week_start_date=date(2026, 6, 7),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+
+        created_count, updated_count = sync_schedule_from_legacy(schedule)
+
+        self.assertEqual(created_count, 1)
+        self.assertEqual(updated_count, 0)
+        created_line = ScheduleLine.objects.get(schedule=schedule, employee_identifier="36178712")
+        self.assertEqual(created_line.employee_name, "Persona Bloqueada")
+        self.assertEqual(created_line.job_role_name, "CONDUCTOR")
+        self.assertEqual(created_line.department_name, "TRANSPORTE")
+
 
 class ScheduleDeleteViewTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.site = Site.objects.create(code="007", name="JARDIN.I")
+        self.personal_vario, _ = Site.objects.get_or_create(
+            code=Site.PERSONAL_VARIO_CODE,
+            defaults={
+                "name": Site.PERSONAL_VARIO_NAME,
+                "admin_only": True,
+                "is_active": True,
+            },
+        )
         self.job_role = JobRole.objects.create(
             code="CARN",
             name="Carnicero",
@@ -1354,6 +1399,7 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "quedo cerrado para edicion")
         self.assertNotContains(response, "Guardar cambios")
+        self.assertContains(response, "Habilitar edicion")
 
     def test_published_schedule_shows_view_action_in_list(self):
         self.schedule.status = WeeklySchedule.Status.PUBLISHED
@@ -1460,6 +1506,118 @@ class ScheduleDeleteViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(ScheduleLine.objects.filter(pk=self.line.pk).exists())
+
+    def test_admin_can_unlock_published_schedule_and_save_it_closed_again(self):
+        self.schedule.status = WeeklySchedule.Status.PUBLISHED
+        self.schedule.save()
+        self.client.login(username="admin_delete", password="secret")
+
+        unlock_response = self.client.post(
+            reverse("schedules:unlock", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(unlock_response.status_code, 302)
+        self.schedule.refresh_from_db()
+        self.assertTrue(self.schedule.admin_edit_enabled)
+        self.assertFalse(self.schedule.is_closed)
+
+        save_response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "status": WeeklySchedule.Status.PUBLISHED,
+                "notes": "Revisado por admin",
+                "lines-TOTAL_FORMS": "1",
+                "lines-INITIAL_FORMS": "1",
+                "lines-MIN_NUM_FORMS": "0",
+                "lines-MAX_NUM_FORMS": "1000",
+                "lines-0-id": str(self.line.pk),
+                "lines-0-day_0_shift_1": self.line.day_0_shift_1,
+                "lines-0-day_0_shift_2": self.line.day_0_shift_2,
+                "lines-0-day_0_compensation_mode": "",
+                "lines-0-day_0_compensation_hours": "",
+                "lines-0-day_1_shift_1": "",
+                "lines-0-day_1_shift_2": "",
+                "lines-0-day_1_compensation_mode": "",
+                "lines-0-day_1_compensation_hours": "",
+                "lines-0-day_1_inventory": "",
+                "lines-0-day_2_shift_1": "",
+                "lines-0-day_2_shift_2": "",
+                "lines-0-day_2_compensation_mode": "",
+                "lines-0-day_2_compensation_hours": "",
+                "lines-0-day_2_inventory": "",
+                "lines-0-day_3_shift_1": "",
+                "lines-0-day_3_shift_2": "",
+                "lines-0-day_3_compensation_mode": "",
+                "lines-0-day_3_compensation_hours": "",
+                "lines-0-day_3_inventory": "",
+                "lines-0-day_4_shift_1": "",
+                "lines-0-day_4_shift_2": "",
+                "lines-0-day_4_compensation_mode": "",
+                "lines-0-day_4_compensation_hours": "",
+                "lines-0-day_4_inventory": "",
+                "lines-0-day_5_shift_1": "",
+                "lines-0-day_5_shift_2": "",
+                "lines-0-day_5_compensation_mode": "",
+                "lines-0-day_5_compensation_hours": "",
+                "lines-0-day_5_inventory": "",
+                "lines-0-day_6_shift_1": "",
+                "lines-0-day_6_shift_2": "",
+                "lines-0-day_6_compensation_mode": "",
+                "lines-0-day_6_compensation_hours": "",
+                "lines-0-day_6_inventory": "",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(save_response.status_code, 302)
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.notes, "Revisado por admin")
+        self.assertFalse(self.schedule.admin_edit_enabled)
+        self.assertTrue(self.schedule.is_closed)
+
+    def test_site_user_cannot_unlock_published_schedule(self):
+        self.schedule.status = WeeklySchedule.Status.PUBLISHED
+        self.schedule.save()
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:unlock", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("schedules.forms.lookup_third_party_by_identifier", return_value=None)
+    def test_personal_vario_manual_add_requires_blacklisted_identifier(self, _mock_lookup):
+        schedule = WeeklySchedule.objects.create(
+            site=self.personal_vario,
+            week_start_date=date(2026, 6, 14),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": schedule.pk}),
+            {
+                "manual_add_submit": "1",
+                "manual-lookup_attempts": "2",
+                "manual-employee_identifier": "999888777",
+                "manual-employee_name": "No Bloqueado",
+                "manual-job_role": str(self.job_role.pk),
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "lista negra")
+        self.assertFalse(
+            ScheduleLine.objects.filter(schedule=schedule, employee_identifier="999888777").exists()
+        )
 
     def test_schedule_excel_download_returns_spreadsheet(self):
         self.client.login(username="operador_delete", password="secret")

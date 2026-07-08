@@ -57,11 +57,17 @@
               {% if schedule.is_closed %}Ver{% else %}Editar{% endif %}
             </a>
             <a href="{% url 'schedules:excel-download' schedule.pk %}" class="text-link">Excel</a>
-            {% if schedule.is_closed %}
+            {% if schedule.status == "published" %}
             <a href="{% url 'schedules:settlement-download' schedule.pk %}" class="text-link">Paz y salvo</a>
             {% endif %}
+            {% if can_delete_schedules and schedule.is_closed %}
+            <form method="post" action="{% url 'schedules:unlock' schedule.pk %}" onsubmit="return confirm('Se habilitara nuevamente la edicion de este horario publicado. Deseas continuar?');">
+              {% csrf_token %}
+              <button type="submit" class="text-link plain-action-button">Habilitar edicion</button>
+            </form>
+            {% endif %}
             {% if can_delete_schedules %}
-            <form method="post" action="{% url 'schedules:delete' schedule.pk %}" onsubmit="return confirm('Se eliminara este horario y todos sus registros. ¿Deseas continuar?');">
+            <form method="post" action="{% url 'schedules:delete' schedule.pk %}" onsubmit="return confirm('Se eliminara este horario y todos sus registros. Deseas continuar?');">
               {% csrf_token %}
               <button type="submit" class="text-link text-link-danger plain-action-button">Eliminar</button>
             </form>

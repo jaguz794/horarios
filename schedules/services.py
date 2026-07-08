@@ -9,11 +9,11 @@ from io import StringIO
 import re
 import unicodedata
 
-from core.models import JobRole, ShiftTemplate, SystemConfiguration
+from core.models import JobRole, OperationalStaffCache, ShiftTemplate, Site, SystemConfiguration
 from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db.utils import OperationalError, ProgrammingError
-from legacy.services import fetch_active_staff_for_site
+from legacy.services import OperationalStaffingRecord, fetch_active_staff_for_site
 from openpyxl import load_workbook
 from schedules.calendar_utils import get_special_day_label
 from schedules.models import (
@@ -219,6 +219,67 @@ def is_employee_blacklisted(employee_identifier: str) -> bool:
     if not cleaned_identifier:
         return False
     return cleaned_identifier in get_blacklisted_employee_identifiers([cleaned_identifier])
+
+
+def schedule_accepts_blacklisted_staff(schedule: WeeklySchedule | None) -> bool:
+    site = getattr(schedule, "site", None)
+    return bool(site and site.is_personal_vario)
+
+
+def build_personal_vario_staff_records() -> list[OperationalStaffingRecord]:
+    blacklist_entries = list(
+        EmployeeScheduleBlacklist.objects.filter(is_active=True).order_by("employee_name", "employee_identifier")
+    )
+    if not blacklist_entries:
+        return []
+
+    identifiers = [entry.employee_identifier for entry in blacklist_entries if (entry.employee_identifier or "").strip()]
+    cache_rows = list(
+        OperationalStaffCache.objects.filter(employee_identifier__in=identifiers, is_active=True).order_by(
+            "employee_identifier",
+            "role_name",
+            "employee_name",
+        )
+    )
+    cache_map: dict[str, OperationalStaffCache] = {}
+    for row in cache_rows:
+        cache_map.setdefault((row.employee_identifier or "").strip(), row)
+
+    records = []
+    for entry in blacklist_entries:
+        employee_identifier = (entry.employee_identifier or "").strip()
+        if not employee_identifier:
+            continue
+        cached_row = cache_map.get(employee_identifier)
+        employee_name = (
+            (entry.employee_name or "").strip()
+            or ((cached_row.employee_name or "").strip() if cached_row else "")
+            or employee_identifier
+        )
+        role_code = ((cached_row.role_code or "").strip() if cached_row else "")
+        role_name = ((cached_row.role_name or "").strip() if cached_row else "") or "PERSONAL VARIO"
+        department_code = ((cached_row.department_code or "").strip() if cached_row else "")
+        department_name = ((cached_row.department_name or "").strip() if cached_row else "")
+        records.append(
+            OperationalStaffingRecord(
+                employee_id=employee_identifier,
+                employee_name=employee_name,
+                site_code=Site.PERSONAL_VARIO_CODE,
+                department_code=department_code,
+                department_name=department_name,
+                role_code=role_code,
+                role_name=role_name,
+            )
+        )
+
+    return sorted(
+        records,
+        key=lambda item: (
+            (item.role_name or "").casefold(),
+            (item.employee_name or "").casefold(),
+            (item.employee_id or "").casefold(),
+        ),
+    )
 
 
 def get_daily_overtime_hours(worked_hours: Decimal, day_reference_hours: Decimal) -> Decimal:
@@ -1368,6 +1429,9 @@ def build_schedule_balance_audit_rows(
 
 
 def purge_blacklisted_lines_from_schedule(schedule: WeeklySchedule) -> list[str]:
+    if schedule_accepts_blacklisted_staff(schedule):
+        return []
+
     blacklisted_identifiers = get_blacklisted_employee_identifiers(
         schedule.lines.values_list("employee_identifier", flat=True)
     )
@@ -1383,9 +1447,11 @@ def copy_schedule_template(source_schedule: WeeklySchedule, target_schedule: Wee
     if source_schedule.pk == target_schedule.pk:
         return 0, 0
 
-    blacklisted_identifiers = get_blacklisted_employee_identifiers(
-        source_schedule.lines.values_list("employee_identifier", flat=True)
-    )
+    blacklisted_identifiers = set()
+    if not schedule_accepts_blacklisted_staff(target_schedule):
+        blacklisted_identifiers = get_blacklisted_employee_identifiers(
+            source_schedule.lines.values_list("employee_identifier", flat=True)
+        )
     source_lines = {
         (line.employee_identifier or "").strip(): line
         for line in source_schedule.lines.all()
@@ -1421,13 +1487,17 @@ def copy_schedule_template(source_schedule: WeeklySchedule, target_schedule: Wee
 def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
     config = SystemConfiguration.load()
     purge_blacklisted_lines_from_schedule(schedule)
-    staff = fetch_active_staff_for_site(
-        schedule.site.code,
-        week_start_date=schedule.week_start_date,
-    )
-    blacklisted_identifiers = get_blacklisted_employee_identifiers(
-        [employee.employee_id for employee in staff]
-    )
+    if schedule.site.is_personal_vario:
+        staff = build_personal_vario_staff_records()
+        blacklisted_identifiers: set[str] = set()
+    else:
+        staff = fetch_active_staff_for_site(
+            schedule.site.code,
+            week_start_date=schedule.week_start_date,
+        )
+        blacklisted_identifiers = get_blacklisted_employee_identifiers(
+            [employee.employee_id for employee in staff]
+        )
     existing_lines = {
         line.employee_identifier: line for line in schedule.lines.all()
     }
@@ -1439,7 +1509,7 @@ def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
         if employee.employee_id in blacklisted_identifiers:
             continue
         job_role, _ = JobRole.objects.get_or_create(
-            name=employee.role_name or "SIN CARGO",
+            name=employee.role_name or "PERSONAL VARIO",
             defaults={
                 "code": employee.role_code,
                 "weekly_target_hours": config.default_weekly_hours,
@@ -1460,10 +1530,21 @@ def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
         line.employee_name = employee.employee_name
         line.department_code = employee.department_code
         line.department_name = employee.department_name
-        line.job_role_code = employee.role_code
-        line.job_role_name = employee.role_name
-        line.weekly_target_hours = job_role.weekly_target_hours
-        line.daily_max_hours = job_role.daily_max_hours
+        if schedule.site.is_personal_vario:
+            if not (line.job_role_name or "").strip() or (line.job_role_name or "").strip().upper() == "PERSONAL VARIO":
+                line.job_role_code = employee.role_code or job_role.code
+                line.job_role_name = employee.role_name or job_role.name
+                line.weekly_target_hours = job_role.weekly_target_hours
+                line.daily_max_hours = job_role.daily_max_hours
+            else:
+                line.job_role_code = line.job_role_code or employee.role_code or job_role.code
+                line.weekly_target_hours = line.weekly_target_hours or job_role.weekly_target_hours
+                line.daily_max_hours = line.daily_max_hours or job_role.daily_max_hours
+        else:
+            line.job_role_code = employee.role_code
+            line.job_role_name = employee.role_name
+            line.weekly_target_hours = job_role.weekly_target_hours
+            line.daily_max_hours = job_role.daily_max_hours
         line.save()
         touched_employee_identifiers.append(line.employee_identifier)
 

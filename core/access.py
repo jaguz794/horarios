@@ -33,7 +33,7 @@ def get_accessible_sites_queryset(user, base_queryset: QuerySet | None = None) -
     if not access:
         return queryset.none()
 
-    return queryset.filter(user_access_profiles=access).distinct()
+    return queryset.filter(user_access_profiles=access, admin_only=False).distinct()
 
 
 def get_accessible_schedules_queryset(user, base_queryset: QuerySet | None = None) -> QuerySet:

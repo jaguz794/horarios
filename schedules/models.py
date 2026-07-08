@@ -22,6 +22,7 @@ class WeeklySchedule(TimeStampedModel):
         default=SystemConfiguration.SUNDAY,
     )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    admin_edit_enabled = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -53,7 +54,7 @@ class WeeklySchedule(TimeStampedModel):
 
     @property
     def is_closed(self) -> bool:
-        return self.status == self.Status.PUBLISHED
+        return self.status == self.Status.PUBLISHED and not self.admin_edit_enabled
 
     def save(self, *args, **kwargs):
         if isinstance(self.week_start_date, str):
@@ -62,6 +63,8 @@ class WeeklySchedule(TimeStampedModel):
             self.week_end_date = self.week_start_date + timedelta(days=6)
         if self.first_day_index is None:
             self.first_day_index = SystemConfiguration.load().week_start_day
+        if self.status != self.Status.PUBLISHED:
+            self.admin_edit_enabled = False
         super().save(*args, **kwargs)
 
     def get_day_columns(self) -> list[dict[str, str]]:
