@@ -837,6 +837,7 @@ textarea:focus {
   min-width: 142px;
   width: 142px;
   max-width: 142px;
+  overflow: hidden;
 }
 
 .special-day-label {
@@ -855,6 +856,17 @@ textarea:focus {
   width: 126px;
   display: grid;
   gap: 6px;
+  align-content: start;
+}
+
+.turn-cell .input,
+.turn-cell .input--compact,
+.turn-cell select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 10px;
+  font-size: 0.84rem;
 }
 
 .schedule-cell-employee,
@@ -883,11 +895,18 @@ textarea:focus {
   display: grid;
   gap: 6px;
   padding-top: 2px;
+  min-width: 0;
 }
 
 .day-payment .input--payment-mode,
 .day-payment .input--pay-hours {
-  min-width: 100%;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.day-payment-hours {
+  min-width: 0;
 }
 
 .day-payment-hours[hidden] {
@@ -898,6 +917,7 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   font-size: 0.78rem;
   font-weight: 700;
   color: var(--brand-green-dark);
@@ -912,6 +932,9 @@ textarea:focus {
 
 .inventory-flag span {
   line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .payment-info {
