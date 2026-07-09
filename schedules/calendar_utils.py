@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from functools import lru_cache
+
+from django.db import OperationalError, ProgrammingError
 
 
 def calculate_easter_sunday(year: int) -> date:
@@ -27,7 +30,8 @@ def move_to_next_monday(day_value: date) -> date:
     return day_value + timedelta(days=(7 - day_value.weekday()))
 
 
-def get_colombian_holidays(year: int) -> set[date]:
+@lru_cache(maxsize=32)
+def get_base_colombian_holidays(year: int) -> set[date]:
     easter = calculate_easter_sunday(year)
     holidays = {
         date(year, 1, 1),
@@ -50,6 +54,21 @@ def get_colombian_holidays(year: int) -> set[date]:
         move_to_next_monday(easter + timedelta(days=68)),  # Sagrado Corazon
     }
     return holidays
+
+
+def get_manual_holidays(year: int) -> set[date]:
+    try:
+        from core.models import Holiday
+
+        return set(
+            Holiday.objects.filter(is_active=True, holiday_date__year=year).values_list("holiday_date", flat=True)
+        )
+    except (OperationalError, ProgrammingError):
+        return set()
+
+
+def get_colombian_holidays(year: int) -> set[date]:
+    return get_base_colombian_holidays(year) | get_manual_holidays(year)
 
 
 def is_colombian_holiday(day_value: date) -> bool:

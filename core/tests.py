@@ -11,8 +11,9 @@ from openpyxl import load_workbook
 
 from core.admin import UserSiteAccessAdmin
 from core.access import get_accessible_sites_queryset, user_can_manage_all_sites
-from core.models import Site, UserSiteAccess
+from core.models import Holiday, Site, UserSiteAccess
 from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
+from schedules.calendar_utils import get_special_day_label, is_colombian_holiday
 from schedules.services import rebuild_balances_for_employees_from_week
 
 User = get_user_model()
@@ -186,6 +187,15 @@ class DashboardViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["extra_day_total"], Decimal("3.00"))
+
+
+class HolidayCalendarTests(TestCase):
+    def test_seeded_manual_holiday_is_available_in_schedule_logic(self):
+        configured_holiday = date(2026, 7, 13)
+
+        self.assertTrue(Holiday.objects.filter(holiday_date=configured_holiday, is_active=True).exists())
+        self.assertTrue(is_colombian_holiday(configured_holiday))
+        self.assertEqual(get_special_day_label(configured_holiday), "Festivo")
 
 
 class SiteOrderingTests(TestCase):

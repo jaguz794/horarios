@@ -292,3 +292,19 @@ class SystemConfiguration(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.organization_name
+
+
+class Holiday(TimeStampedModel):
+    holiday_date = models.DateField(unique=True)
+    name = models.CharField(max_length=140)
+    is_active = models.BooleanField(default=True)
+    notes = models.CharField(max_length=220, blank=True)
+
+    class Meta:
+        ordering = ["holiday_date"]
+        db_table = "festivos_configurados"
+        verbose_name = "Festivo"
+        verbose_name_plural = "Festivos"
+
+    def __str__(self) -> str:
+        return f"{self.holiday_date:%Y-%m-%d} - {self.name}"

@@ -117,7 +117,7 @@
             <th class="schedule-col-role">Cargo</th>
             <th class="schedule-col-actions">Acciones</th>
             {% for column in day_columns %}
-            <th>
+            <th class="schedule-col-day">
               <div>{{ column.label }}</div>
               <small>{{ column.date }}</small>
               {% if column.special_label %}
@@ -210,6 +210,7 @@
             {% for column in day_columns %}
             {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name inventory_field=line_form|form_field:column.inventory_name %}
             <td
+              class="schedule-day-cell"
               data-day-index="{{ column.index }}"
               data-day-label="{{ column.label }} {{ column.date }}"
               data-special-day="{{ column.special_label }}"

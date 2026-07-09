@@ -38,7 +38,7 @@
       <ul class="stat-tooltip-list">
         {% for item in dashboard_alert_items %}
         <li>
-          <span>{{ item.site_name }} · {{ item.week_label }}</span>
+          <span>{{ item.site_name }} - {{ item.week_label }}</span>
           <small>{{ item.warning_total }} alerta(s) en {{ item.warning_line_count }} colaborador(es).</small>
           <small>{{ item.summary_text }}</small>
         </li>

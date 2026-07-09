@@ -410,8 +410,10 @@ img {
 .stat-tooltip {
   position: absolute;
   top: calc(100% - 6px);
-  right: 18px;
-  width: min(360px, calc(100vw - 80px));
+  left: 12px;
+  right: 12px;
+  width: auto;
+  max-width: min(360px, calc(100vw - 420px));
   padding: 14px 16px;
   border-radius: 18px;
   border: 1px solid rgba(84, 112, 90, 0.18);
@@ -421,11 +423,14 @@ img {
   pointer-events: none;
   transform: translateY(10px);
   transition: opacity 0.2s ease, transform 0.2s ease;
-  z-index: 10;
+  z-index: 12;
+  max-height: 280px;
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .stat-tooltip--compact {
-  width: min(260px, calc(100vw - 80px));
+  max-width: min(260px, calc(100vw - 420px));
 }
 
 .stat-card--tooltip:hover .stat-tooltip,
@@ -495,7 +500,10 @@ img {
   pointer-events: none;
   transform: translateY(10px);
   transition: opacity 0.2s ease, transform 0.2s ease;
-  z-index: 10;
+  z-index: 12;
+  max-height: 220px;
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .list-card--tooltip:hover .list-card-summary-float,
@@ -713,19 +721,19 @@ textarea:focus {
 }
 
 .schedule-grid-wrap {
-  max-height: min(62vh, calc(100vh - 320px));
+  width: 100%;
+  max-width: 100%;
+  max-height: min(58vh, calc(100vh - 330px));
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
 }
 
 .schedule-actions-bar {
-  position: sticky;
-  bottom: 0;
-  z-index: 3;
   display: flex;
   justify-content: flex-end;
-  padding-top: 6px;
-  padding-bottom: 4px;
-  background: linear-gradient(180deg, rgba(255, 255, 251, 0) 0%, rgba(255, 255, 251, 0.94) 34%, rgba(255, 255, 251, 1) 100%);
+  margin-top: 14px;
+  padding-top: 4px;
 }
 
 .schedule-actions-bar .primary-button {
@@ -739,16 +747,17 @@ textarea:focus {
 
 .data-table,
 .schedule-table {
-  width: 100%;
+  width: max-content;
+  max-width: none;
   border-collapse: collapse;
-  min-width: 1400px;
+  min-width: 2230px;
 }
 
 .data-table th,
 .data-table td,
 .schedule-table th,
 .schedule-table td {
-  padding: 12px;
+  padding: 10px 8px;
   border-bottom: 1px solid #eef3dc;
   text-align: left;
   vertical-align: top;
@@ -772,6 +781,64 @@ textarea:focus {
   box-shadow: inset 0 -1px 0 #d9e6b6;
 }
 
+.schedule-col-document,
+.schedule-cell-document,
+.schedule-col-employee,
+.schedule-cell-employee,
+.schedule-col-role,
+.schedule-cell-role,
+.schedule-col-actions,
+.schedule-cell-actions {
+  position: sticky;
+  background: #fffef8;
+  z-index: 1;
+}
+
+.schedule-table th.schedule-col-document,
+.schedule-table th.schedule-col-employee,
+.schedule-table th.schedule-col-role,
+.schedule-table th.schedule-col-actions {
+  z-index: 4;
+  background: linear-gradient(180deg, #f6f7ba 0%, #ecf5c8 100%);
+}
+
+.schedule-col-document,
+.schedule-cell-document {
+  left: 0;
+  min-width: 88px;
+  width: 88px;
+}
+
+.schedule-col-employee,
+.schedule-cell-employee {
+  left: 88px;
+  min-width: 160px;
+  width: 160px;
+  max-width: 160px;
+}
+
+.schedule-col-role,
+.schedule-cell-role {
+  left: 248px;
+  min-width: 122px;
+  width: 122px;
+  max-width: 122px;
+}
+
+.schedule-col-actions,
+.schedule-cell-actions {
+  left: 370px;
+  min-width: 72px;
+  width: 72px;
+}
+
+.schedule-col-day,
+.schedule-day-cell {
+  min-width: 142px;
+  width: 142px;
+  max-width: 142px;
+}
+
 .special-day-label {
   display: inline-flex;
   margin-top: 4px;
@@ -784,39 +851,17 @@ textarea:focus {
 }
 
 .turn-cell {
-  min-width: 170px;
+  min-width: 126px;
+  width: 126px;
   display: grid;
   gap: 6px;
 }
 
-.schedule-col-document,
-.schedule-cell-document {
-  min-width: 110px;
-}
-
-.schedule-col-employee,
-.schedule-cell-employee {
-  min-width: 220px;
-  max-width: 260px;
-}
-
 .schedule-cell-employee,
 .schedule-cell-role {
-  font-size: 0.86rem;
+  font-size: 0.82rem;
   line-height: 1.25;
   word-break: break-word;
-}
-
-.schedule-col-role,
-.schedule-cell-role {
-  min-width: 150px;
-  max-width: 190px;
-}
-
-.schedule-col-actions,
-.schedule-cell-actions {
-  min-width: 86px;
-  width: 86px;
 }
 
 .table-action-button {
@@ -842,7 +887,7 @@ textarea:focus {
 
 .day-payment .input--payment-mode,
 .day-payment .input--pay-hours {
-  min-width: 124px;
+  min-width: 100%;
 }
 
 .day-payment-hours[hidden] {
@@ -974,12 +1019,13 @@ textarea:focus {
 
 .alerts-column,
 .alerts-cell {
-  min-width: 160px;
+  min-width: 150px;
+  width: 150px;
 }
 
 .alerts-cell small {
   display: block;
-  max-width: 170px;
+  max-width: 150px;
   white-space: normal;
   line-height: 1.35;
 }
