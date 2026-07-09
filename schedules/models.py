@@ -95,6 +95,7 @@ class ScheduleLine(TimeStampedModel):
         NONE = "", "Sin pago"
         PAY_DAY = "pay_day", "Pago dia"
         PAY_HOURS = "pay_hours", "Pago horas"
+        ADVANCE_DAY = "advance_day", "Descanso adelantado"
         PAY_MONEY_DAY = "pay_money_day", "Pago dinero dia"
         PAY_MONEY_HOURS = "pay_money_hours", "Pago dinero horas"
         PAY_MONEY = "pay_money", "Pago dinero horas (anterior)"
@@ -154,16 +155,21 @@ class ScheduleLine(TimeStampedModel):
     day_6_inventory = models.BooleanField(default=False)
 
     total_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    expected_work_days = models.PositiveSmallIntegerField(default=0)
+    expected_weekly_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    weekly_hour_difference = models.DecimalField(max_digits=7, decimal_places=2, default=Decimal("0.00"))
     overtime_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     night_bonus_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     special_days_generated = models.PositiveSmallIntegerField(default=0)
     manual_day_adjustment = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     manual_hour_adjustment = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     payment_days_used = models.PositiveSmallIntegerField(default=0)
+    advance_rest_days_used = models.PositiveSmallIntegerField(default=0)
     payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     money_payment_days_used = models.PositiveSmallIntegerField(default=0)
     money_payment_hours_used = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     accrued_day_balance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    advance_rest_pending_balance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     accrued_hour_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
     accrued_total_hours_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
     validation_summary = models.TextField(blank=True)
@@ -272,10 +278,12 @@ class EmployeeScheduleBlacklist(TimeStampedModel):
 class ScheduleBalanceMovement(TimeStampedModel):
     class MovementType(models.TextChoices):
         OVERTIME = "overtime", "Hora extra generada"
+        HOUR_DEFICIT = "hour_deficit", "Horas faltantes"
         SPECIAL_DAY = "special_day", "Domingo o festivo laborado"
         MANUAL_DAY = "manual_day", "Ajuste manual de dias"
         MANUAL_HOUR = "manual_hour", "Ajuste manual de horas"
         PAY_DAY = "pay_day", "Pago con descanso"
+        ADVANCE_DAY = "advance_day", "Descanso adelantado"
         PAY_HOURS = "pay_hours", "Pago con horas"
         PAY_MONEY_DAY = "pay_money_day", "Pago en dinero por dia"
         PAY_MONEY_HOURS = "pay_money_hours", "Pago en dinero por horas"

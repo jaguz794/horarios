@@ -19,7 +19,10 @@ function initScheduleCalculations() {
   const scheduleClosed = scheduleTable.dataset.scheduleClosed === "true";
   const moneyHourModes = new Set(["pay_money", "pay_money_hours"]);
   const moneyDayModes = new Set(["pay_money_day"]);
+  const advanceDayModes = new Set(["advance_day"]);
   const compensationModesWithHours = new Set(["pay_hours", ...moneyHourModes]);
+  const restShiftLabels = new Set(["descanso"]);
+  const leaveShiftLabels = new Set(["incapacidad", "traslado", "vacaciones", "renuncia", "licencia"]);
   const autosaveEnabled = scheduleForm.dataset.autosaveEnabled === "true";
   const csrfToken = scheduleForm.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
   let autosaveDirty = false;
@@ -34,6 +37,7 @@ function initScheduleCalculations() {
   };
 
   const roundHours = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+  const roundInt = (value) => Math.round(Number(value) + Number.EPSILON);
 
   const formatHours = (value, suffix = false) => {
     const rounded = roundHours(value);
@@ -87,6 +91,109 @@ function initScheduleCalculations() {
     };
   };
 
+  const getShiftNonWorkCategory = (label) => {
+    const normalized = String(label || "").trim().toLowerCase();
+    if (!normalized) {
+      return "";
+    }
+    if (restShiftLabels.has(normalized)) {
+      return "rest";
+    }
+    if (leaveShiftLabels.has(normalized)) {
+      return "leave";
+    }
+    return "";
+  };
+
+  const getWeeklyRestDayIndex = (dayStates) => {
+    const sundayState = dayStates.find((dayState) => dayState.dayIndex === 0);
+    if (!sundayState || sundayState.dailyHours <= 0.001) {
+      return 0;
+    }
+
+    for (const dayState of dayStates) {
+      if (dayState.dayIndex === 0) {
+        continue;
+      }
+      if (dayState.dailyHours > 0.001) {
+        continue;
+      }
+      if (dayState.modeValue === "pay_day" || advanceDayModes.has(dayState.modeValue)) {
+        continue;
+      }
+      if (dayState.shiftCategories.has("rest")) {
+        return dayState.dayIndex;
+      }
+    }
+
+    return 0;
+  };
+
+  const buildExpectedPlan = (dayStates, weeklyTargetValue) => {
+    const mandatoryRestIndex = getWeeklyRestDayIndex(dayStates);
+    const expectedIndexes = [];
+    const weeklyTarget = roundHours(weeklyTargetValue);
+    const provisionalStates = dayStates.map((dayState) => {
+      const isHoliday = String(dayState.specialDayLabel || "").includes("Festivo") && dayState.dayIndex !== 0;
+      const isLeaveDay =
+        dayState.dailyHours <= 0.001
+        && dayState.shiftCategories.has("leave")
+        && !isHoliday
+        && dayState.modeValue !== "pay_day"
+        && !advanceDayModes.has(dayState.modeValue);
+
+      let expectedReason = "laborable";
+      if (dayState.dayIndex === mandatoryRestIndex) {
+        expectedReason = "descanso_obligatorio";
+      }
+      if (isHoliday) {
+        expectedReason = "festivo";
+      }
+      if (dayState.modeValue === "pay_day") {
+        expectedReason = "descanso_compensatorio";
+      }
+      if (advanceDayModes.has(dayState.modeValue)) {
+        expectedReason = "descanso_adelantado";
+      }
+      if (isLeaveDay) {
+        expectedReason = "novedad_no_laborable";
+      }
+      if (expectedReason === "laborable") {
+        expectedIndexes.push(dayState.dayIndex);
+      }
+
+      return {
+        ...dayState,
+        isHoliday,
+        isLeaveDay,
+        expectedReason,
+      };
+    });
+
+    const expectedWorkDays = expectedIndexes.length;
+    const expectedWeeklyHours = expectedWorkDays > 0
+      ? roundHours((weeklyTarget * expectedWorkDays) / 6)
+      : 0;
+    const totalCents = roundInt(expectedWeeklyHours * 100);
+    const baseCents = expectedWorkDays > 0 ? Math.floor(totalCents / expectedWorkDays) : 0;
+    const remainderCents = expectedWorkDays > 0 ? totalCents % expectedWorkDays : 0;
+    const expectedHoursByIndex = new Map();
+    expectedIndexes.forEach((index, position) => {
+      const cents = baseCents + (position < remainderCents ? 1 : 0);
+      expectedHoursByIndex.set(index, roundHours(cents / 100));
+    });
+
+    return {
+      mandatoryRestIndex,
+      expectedWorkDays,
+      expectedWeeklyHours,
+      dayStates: provisionalStates.map((dayState) => ({
+        ...dayState,
+        expectedHours: expectedHoursByIndex.get(dayState.dayIndex) || 0,
+      })),
+    };
+  };
+
   const getShiftMetrics = (label) => {
     const normalized = String(label || "").trim();
     if (!normalized) {
@@ -107,16 +214,16 @@ function initScheduleCalculations() {
     entries,
     availableDayBalance,
     availableHourBalance,
+    availableAdvancePendingBalance,
     dayReferenceHoursValue,
     weeklyTargetHoursValue,
   ) => {
-    let remainingDayBalance = Math.max(roundHours(availableDayBalance), 0);
-    let remainingHourBalance = Math.max(roundHours(availableHourBalance), 0);
-    const normalizedWeeklyTargetHours = Math.max(roundHours(weeklyTargetHoursValue), 0);
-    let cumulativeWorkedHours = 0;
-    let cumulativeOvertimeHours = 0;
+    let remainingDayBalance = roundHours(availableDayBalance);
+    let remainingHourBalance = roundHours(availableHourBalance);
+    let remainingAdvancePendingBalance = Math.max(roundHours(availableAdvancePendingBalance), 0);
 
     let paymentDaysUsed = 0;
+    let advanceRestDaysUsed = 0;
     let paymentDaysFromDayBalance = 0;
     let uncoveredPaymentDays = 0;
     let moneyPaymentDaysUsed = 0;
@@ -126,6 +233,7 @@ function initScheduleCalculations() {
     const invalidPayMoneyDayIndices = [];
     const invalidPayHoursIndices = [];
     const invalidPayMoneyIndices = [];
+    const invalidAdvanceDayWithBalanceIndices = [];
     const dayStates = {};
 
     [...entries]
@@ -133,18 +241,22 @@ function initScheduleCalculations() {
       .forEach((entry) => {
         const requestedHours = roundHours(entry.hours);
         const workedHours = roundHours(entry.workedHours);
+        const expectedHours = roundHours(entry.expectedHours);
         const specialGenerated = Boolean(entry.specialGenerated);
         const dayState = {
           mode: entry.mode,
           requestedHours,
           source: "",
           valid: true,
-          availableDayBalance: remainingDayBalance,
-          availableHourBalance: remainingHourBalance,
+          availableDayBalance: roundHours(Math.max(remainingDayBalance, 0)),
+          availableHourBalance: roundHours(Math.max(remainingHourBalance, 0)),
+          availableAdvancePendingBalance: roundHours(remainingAdvancePendingBalance),
           remainingDayBalance,
           remainingHourBalance,
+          remainingAdvancePendingBalance,
           generatedDay: false,
           generatedHours: 0,
+          hourDifference: 0,
         };
 
         if (entry.mode === "pay_day") {
@@ -169,6 +281,17 @@ function initScheduleCalculations() {
             dayState.source = "insufficient";
             dayState.valid = false;
           }
+        } else if (advanceDayModes.has(entry.mode)) {
+          advanceRestDaysUsed += 1;
+          if (remainingDayBalance >= 1) {
+            invalidAdvanceDayWithBalanceIndices.push(entry.index);
+            dayState.source = "use_pay_day";
+            dayState.valid = false;
+          } else {
+            remainingDayBalance = roundHours(remainingDayBalance - 1);
+            remainingAdvancePendingBalance = roundHours(remainingAdvancePendingBalance + 1);
+            dayState.source = "advance_rest";
+          }
         } else if (entry.mode === "pay_hours") {
           paymentHoursUsed = roundHours(paymentHoursUsed + requestedHours);
           const remainingBefore = remainingHourBalance;
@@ -192,28 +315,28 @@ function initScheduleCalculations() {
         if (specialGenerated && workedHours > 0.001) {
           remainingDayBalance = roundHours(remainingDayBalance + 1);
           dayState.generatedDay = true;
+          if (remainingAdvancePendingBalance > 0.001) {
+            const offsetDays = Math.min(remainingAdvancePendingBalance, 1);
+            remainingAdvancePendingBalance = roundHours(remainingAdvancePendingBalance - offsetDays);
+          }
         }
 
-        const previousOvertimeHours = cumulativeOvertimeHours;
-        cumulativeWorkedHours = roundHours(cumulativeWorkedHours + workedHours);
-        cumulativeOvertimeHours = roundHours(
-          Math.max(cumulativeWorkedHours - normalizedWeeklyTargetHours, 0),
-        );
-        const generatedHours = roundHours(
-          Math.max(cumulativeOvertimeHours - previousOvertimeHours, 0),
-        );
-        if (generatedHours > 0.001) {
-          remainingHourBalance = roundHours(remainingHourBalance + generatedHours);
-          dayState.generatedHours = generatedHours;
+        const hourDifference = roundHours(workedHours - expectedHours);
+        remainingHourBalance = roundHours(remainingHourBalance + hourDifference);
+        dayState.hourDifference = hourDifference;
+        if (hourDifference > 0.001) {
+          dayState.generatedHours = hourDifference;
         }
 
         dayState.remainingDayBalance = remainingDayBalance;
         dayState.remainingHourBalance = remainingHourBalance;
+        dayState.remainingAdvancePendingBalance = remainingAdvancePendingBalance;
         dayStates[entry.index] = dayState;
       });
 
     return {
       paymentDaysUsed,
+      advanceRestDaysUsed,
       paymentDaysFromDayBalance,
       paymentDaysFromHourBalance: 0,
       uncoveredPaymentDays,
@@ -225,8 +348,10 @@ function initScheduleCalculations() {
       invalidPayMoneyDayIndices,
       invalidPayHoursIndices,
       invalidPayMoneyIndices,
+      invalidAdvanceDayWithBalanceIndices,
       remainingDayBalance,
       remainingHourBalance,
+      remainingAdvancePendingBalance,
       dayStates,
     };
   };
@@ -326,6 +451,7 @@ function initScheduleCalculations() {
     const dailyMax = parseDecimal(row.dataset.dailyMax);
     const priorDayBalance = parseDecimal(row.dataset.priorDayBalance);
     const priorHourBalance = parseDecimal(row.dataset.priorHourBalance);
+    const priorAdvancePendingBalance = parseDecimal(row.dataset.priorAdvancePendingBalance);
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
     const hasOvertimeRestriction = row.dataset.overtimeRestrictionActive === "true";
     const overtimeRestrictionDailyLimit = parseDecimal(row.dataset.overtimeRestrictionDailyLimit);
@@ -385,13 +511,24 @@ function initScheduleCalculations() {
         return;
       }
 
+      if (advanceDayModes.has(modeValue)) {
+        paymentInfo.hidden = false;
+        if (state.paymentState?.source === "advance_rest") {
+          paymentInfo.textContent = `Descanso adelantado: deja 1 dia a favor de la empresa. Pendientes por cruzar: ${formatHours(state.paymentState.remainingAdvancePendingBalance)} dia(s).`;
+        } else {
+          paymentInfo.textContent = "Descanso adelantado: si ya hay dias positivos, usa pago dia.";
+        }
+        return;
+      }
+
       if (modeValue === "pay_hours") {
         paymentInfo.hidden = false;
         const coveredHours = state.dailyHours + state.compensationHoursValue;
-        if (coveredHours >= dayReferenceHours - 0.001) {
+        const expectedHours = state.expectedHours || 0;
+        if (coveredHours >= expectedHours - 0.001) {
           paymentInfo.textContent = `Trabajadas ${formatHours(state.dailyHours)} h + pagas ${formatHours(state.compensationHoursValue)} h = jornada cubierta.`;
         } else {
-          paymentInfo.textContent = `Trabajadas ${formatHours(state.dailyHours)} h + pagas ${formatHours(state.compensationHoursValue)} h. Faltan ${formatHours(dayReferenceHours - coveredHours)} h.`;
+          paymentInfo.textContent = `Trabajadas ${formatHours(state.dailyHours)} h + pagas ${formatHours(state.compensationHoursValue)} h. Faltan ${formatHours(expectedHours - coveredHours)} h.`;
         }
         return;
       }
@@ -406,21 +543,30 @@ function initScheduleCalculations() {
       paymentInfo.textContent = "";
     };
 
-    const updateBalanceNote = (endingDayBalance, endingHourBalance) => {
+    const updateBalanceNote = (endingDayBalance, endingHourBalance, endingAdvancePendingBalance) => {
       if (!balanceNote) {
         return;
       }
-      balanceNote.textContent = `Saldo previo: ${formatHours(priorDayBalance)} dia(s) y ${formatHours(priorHourBalance)} h. Resultado estimado: ${formatHours(endingDayBalance)} dia(s) y ${formatHours(endingHourBalance)} h.`;
+      balanceNote.textContent = `Saldo previo: ${formatHours(priorDayBalance)} dia(s), ${formatHours(priorHourBalance)} h y ${formatHours(priorAdvancePendingBalance)} descanso(s) adelantado(s). Resultado estimado: ${formatHours(endingDayBalance)} dia(s), ${formatHours(endingHourBalance)} h y ${formatHours(endingAdvancePendingBalance)} descanso(s) adelantado(s).`;
     };
 
     const buildLiveSummary = (summaryState) => {
       const liveMessages = [];
 
+      liveMessages.push(
+        `Horas esperadas: ${formatHours(summaryState.expectedWeeklyHours, true)}. Programadas: ${formatHours(summaryState.totalHours, true)}. Diferencia: ${formatHours(summaryState.weeklyHourDifference, true)}.`,
+      );
+      liveMessages.push(
+        `Saldo actual estimado: ${formatHours(summaryState.endingDayBalance)} dia(s) y ${formatHours(summaryState.endingHourBalance)} h.`,
+      );
       if (summaryState.specialDaysGenerated > 0.001) {
         liveMessages.push(`Genera ${formatHours(summaryState.specialDaysGenerated)} dia(s) por domingos/festivos.`);
       }
       if (summaryState.overtimeHours > 0.001) {
         liveMessages.push(`Extras calculadas: ${formatHours(summaryState.overtimeHours, true)}.`);
+      }
+      if (summaryState.weeklyHourDifference < -0.001) {
+        liveMessages.push(`Incumplimiento semanal: faltan ${formatHours(Math.abs(summaryState.weeklyHourDifference), true)}.`);
       }
       if (summaryState.overtimeDailyRestrictionExceededCount > 0) {
         liveMessages.push(
@@ -444,6 +590,9 @@ function initScheduleCalculations() {
       if (summaryState.invalidPayMoneyDayCount > 0) {
         liveMessages.push("Hay pagos en dinero por dia sin un dia acumulado disponible.");
       }
+      if (summaryState.invalidAdvanceDayCount > 0) {
+        liveMessages.push("Hay descansos adelantados en dias que ya tienen saldo positivo disponible.");
+      }
       if (summaryState.invalidHourDiscountCount > 0) {
         liveMessages.push("Hay descuentos por horas que superan el saldo acumulado disponible.");
       }
@@ -462,6 +611,9 @@ function initScheduleCalculations() {
       if (summaryState.manualDayAdjustment !== 0 || summaryState.manualHourAdjustment !== 0) {
         liveMessages.push(`Ajuste manual aplicado: ${formatHours(summaryState.manualDayAdjustment)} dia(s) y ${formatHours(summaryState.manualHourAdjustment)} h.`);
       }
+      if (summaryState.endingAdvancePendingBalance > 0.001) {
+        liveMessages.push(`Descansos adelantados pendientes por cruzar: ${formatHours(summaryState.endingAdvancePendingBalance)} dia(s).`);
+      }
       if (summaryState.endingDayBalance < -0.001 || summaryState.endingHourBalance < -0.001) {
         liveMessages.push("Parte del saldo queda a favor de la empresa.");
       }
@@ -471,6 +623,9 @@ function initScheduleCalculations() {
       }
 
       const conciseMessages = [];
+      conciseMessages.push(
+        `Esperadas ${formatHours(summaryState.expectedWeeklyHours, true)} / programadas ${formatHours(summaryState.totalHours, true)} / diferencia ${formatHours(summaryState.weeklyHourDifference, true)}.`,
+      );
       if (summaryState.specialDaysGenerated > 0.001) {
         conciseMessages.push(`Dia(s) generado(s): ${formatHours(summaryState.specialDaysGenerated)}.`);
       }
@@ -483,12 +638,16 @@ function initScheduleCalculations() {
       if (
         summaryState.daysOverLimit > 0
         || summaryState.invalidPayDayCount > 0
+        || summaryState.invalidAdvanceDayCount > 0
         || summaryState.invalidHourDiscountCount > 0
         || summaryState.payHoursOverTargetCount > 0
         || summaryState.payMoneyOverTargetCount > 0
         || summaryState.invalidPositiveHoursCount > 0
       ) {
         conciseMessages.push("Revisa limites o saldo.");
+      }
+      if (summaryState.endingAdvancePendingBalance > 0.001) {
+        conciseMessages.push(`Descansos adelantados: ${formatHours(summaryState.endingAdvancePendingBalance)}.`);
       }
       if (summaryState.endingDayBalance < -0.001 || summaryState.endingHourBalance < -0.001) {
         conciseMessages.push("Saldo a favor de la empresa.");
@@ -506,7 +665,7 @@ function initScheduleCalculations() {
       let payHoursIncompleteCount = 0;
       let invalidPositiveHoursCount = 0;
       let overtimeDailyRestrictionExceededCount = 0;
-      const dayStates = [];
+      const rawDayStates = [];
 
       dayCells.forEach((dayCell) => {
         const dayIndex = Number.parseInt(dayCell.dataset.dayIndex || "0", 10);
@@ -516,7 +675,7 @@ function initScheduleCalculations() {
         const compensationHours = row.querySelector(`[name$="-day_${dayIndex}_compensation_hours"]`);
         const modeValue = compensationMode?.value || "";
 
-        if (!scheduleClosed && modeValue === "pay_day") {
+        if (!scheduleClosed && (modeValue === "pay_day" || advanceDayModes.has(modeValue))) {
           setSelectValue(shift1Select, "descanso");
           setSelectValue(shift2Select, "");
           if (compensationHours) {
@@ -533,8 +692,13 @@ function initScheduleCalculations() {
         const dailyHours = roundHours(shift1Metrics.hours + shift2Metrics.hours);
         const dailyNightHours = roundHours(shift1Metrics.night_hours + shift2Metrics.night_hours);
         const compensationHoursValue = roundHours(parseDecimal(compensationHours?.value));
-        const specialGenerated = Boolean(dayCell.dataset.specialDay) && dailyHours > 0.001;
+        const specialDayLabel = dayCell.dataset.specialDay || "";
+        const specialGenerated = Boolean(specialDayLabel) && dailyHours > 0.001;
         const dailyOvertimeHours = roundHours(Math.max(dailyHours - dayReferenceHours, 0));
+        const shiftCategories = new Set([
+          getShiftNonWorkCategory(shift1),
+          getShiftNonWorkCategory(shift2),
+        ].filter(Boolean));
 
         totalHours = roundHours(totalHours + dailyHours);
         totalNightHours = roundHours(totalNightHours + dailyNightHours);
@@ -543,15 +707,7 @@ function initScheduleCalculations() {
           specialDaysGenerated += 1;
         }
 
-        if (modeValue === "pay_hours") {
-          if (compensationHoursValue <= 0.001) {
-            invalidPositiveHoursCount += 1;
-          } else if (dailyHours + compensationHoursValue > dayReferenceHours + 0.001) {
-            payHoursOverTargetCount += 1;
-          } else if (dailyHours + compensationHoursValue < dayReferenceHours - 0.001) {
-            payHoursIncompleteCount += 1;
-          }
-        } else if (moneyHourModes.has(modeValue)) {
+        if (moneyHourModes.has(modeValue)) {
           if (compensationHoursValue <= 0.001) {
             invalidPositiveHoursCount += 1;
           } else if (compensationHoursValue > dayReferenceHours + 0.001) {
@@ -586,7 +742,7 @@ function initScheduleCalculations() {
         if (hasOvertimeRestriction && dailyOvertimeHours > overtimeRestrictionDailyLimit + 0.001) {
           overtimeDailyRestrictionExceededCount += 1;
         }
-        dayStates.push({
+        rawDayStates.push({
           dayIndex,
           dayCell,
           modeValue,
@@ -594,12 +750,31 @@ function initScheduleCalculations() {
           dailyHours,
           dailyOvertimeHours,
           specialGenerated,
+          specialDayLabel,
+          shiftCategories,
         });
+      });
+
+      const expectedPlan = buildExpectedPlan(rawDayStates, effectiveWeeklyTarget);
+      const dayStates = expectedPlan.dayStates;
+      dayStates.forEach((dayState) => {
+        if (dayState.modeValue === "pay_hours") {
+          if (dayState.compensationHoursValue <= 0.001) {
+            invalidPositiveHoursCount += 1;
+          } else if (dayState.expectedHours <= 0.001) {
+            payHoursOverTargetCount += 1;
+          } else if (dayState.dailyHours + dayState.compensationHoursValue > dayState.expectedHours + 0.001) {
+            payHoursOverTargetCount += 1;
+          } else if (dayState.dailyHours + dayState.compensationHoursValue < dayState.expectedHours - 0.001) {
+            payHoursIncompleteCount += 1;
+          }
+        }
       });
 
       const manualDayAdjustment = roundHours(parseDecimal(manualDayAdjustmentInput?.value));
       const manualHourAdjustment = roundHours(parseDecimal(manualHourAdjustmentInput?.value));
-      const overtimeHours = roundHours(Math.max(totalHours - effectiveWeeklyTarget, 0));
+      const weeklyHourDifference = roundHours(totalHours - expectedPlan.expectedWeeklyHours);
+      const overtimeHours = roundHours(Math.max(weeklyHourDifference, 0));
       const overtimeWeeklyRestrictionExceeded =
         hasOvertimeRestriction && overtimeHours > overtimeRestrictionWeeklyLimit + 0.001;
       const paymentUsage = resolvePaymentUsage(
@@ -608,32 +783,37 @@ function initScheduleCalculations() {
           mode: dayState.modeValue,
           hours: dayState.compensationHoursValue,
           workedHours: dayState.dailyHours,
+          expectedHours: dayState.expectedHours,
           specialGenerated: dayState.specialGenerated,
         })),
         priorDayBalance + manualDayAdjustment,
         priorHourBalance + manualHourAdjustment,
+        Math.max(priorAdvancePendingBalance - Math.max(manualDayAdjustment, 0), 0),
         dayReferenceHours,
-        effectiveWeeklyTarget,
+        expectedPlan.expectedWeeklyHours,
       );
       const endingDayBalance = roundHours(
         priorDayBalance
         + specialDaysGenerated
         + manualDayAdjustment
         - paymentUsage.paymentDaysUsed
-        - paymentUsage.moneyPaymentDaysUsed,
+        - paymentUsage.moneyPaymentDaysUsed
+        - paymentUsage.advanceRestDaysUsed
       );
       const endingHourBalance = roundHours(
         priorHourBalance
-        + overtimeHours
+        + weeklyHourDifference
         + manualHourAdjustment
         - paymentUsage.paymentHoursUsed
         - paymentUsage.moneyPaymentHoursUsed,
       );
+      const endingAdvancePendingBalance = roundHours(paymentUsage.remainingAdvancePendingBalance);
 
       dayStates.forEach((dayState) => {
         updatePaymentInfo(dayState.dayCell, dayState.modeValue, {
           dailyHours: dayState.dailyHours,
           compensationHoursValue: dayState.compensationHoursValue,
+          expectedHours: dayState.expectedHours,
           endingDayBalance,
           endingHourBalance,
           paymentState: paymentUsage.dayStates[dayState.dayIndex],
@@ -658,9 +838,12 @@ function initScheduleCalculations() {
         hourBalanceCell.classList.toggle("metric-cell--negative", endingHourBalance < -0.001);
       }
 
-      updateBalanceNote(endingDayBalance, endingHourBalance);
+      updateBalanceNote(endingDayBalance, endingHourBalance, endingAdvancePendingBalance);
 
       const liveMessages = buildLiveSummary({
+        totalHours,
+        expectedWeeklyHours: expectedPlan.expectedWeeklyHours,
+        weeklyHourDifference,
         totalNightHours,
         overtimeHours,
         overtimeDailyRestrictionExceededCount,
@@ -671,6 +854,7 @@ function initScheduleCalculations() {
         specialDaysGenerated,
         invalidPayDayCount: paymentUsage.invalidPayDayIndices.length,
         invalidPayMoneyDayCount: paymentUsage.invalidPayMoneyDayIndices.length,
+        invalidAdvanceDayCount: paymentUsage.invalidAdvanceDayWithBalanceIndices.length,
         invalidHourDiscountCount: paymentUsage.invalidPayHoursIndices.length + paymentUsage.invalidPayMoneyIndices.length,
         payHoursOverTargetCount,
         payMoneyOverTargetCount,
@@ -680,6 +864,7 @@ function initScheduleCalculations() {
         manualHourAdjustment,
         endingDayBalance,
         endingHourBalance,
+        endingAdvancePendingBalance,
       });
 
       if (summaryCell) {

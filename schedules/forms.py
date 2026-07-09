@@ -15,10 +15,14 @@ from legacy.services import lookup_third_party_by_identifier
 from schedules.calendar_utils import get_special_day_label
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
+    build_compensation_entries,
+    build_expected_week_plan,
+    build_line_day_breakdown,
     get_active_overtime_restriction,
     is_employee_blacklisted,
     get_daily_overtime_hours,
     get_rest_shift_label,
+    get_selected_shift_templates,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
     resolve_compensation_usage,
@@ -384,6 +388,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         payment_choices = [
             ScheduleLine.CompensationMode.NONE,
             ScheduleLine.CompensationMode.PAY_DAY,
+            ScheduleLine.CompensationMode.ADVANCE_DAY,
             ScheduleLine.CompensationMode.PAY_HOURS,
         ]
         selected_compensation_modes = {
@@ -477,11 +482,13 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             shift.label: shift
             for shift in ShiftTemplate.objects.filter(label__in=shift_labels)
         }
-        prior_day_balance = max(self.balance_snapshot["prior_day_balance"], Decimal("0.00"))
-        prior_hour_balance = max(self.balance_snapshot["prior_hour_balance"], Decimal("0.00"))
-        compensation_entries: list[dict[str, Decimal | int | str]] = []
-        total_worked_hours = Decimal("0.00")
+        prior_day_balance = self.balance_snapshot["prior_day_balance"]
+        prior_hour_balance = self.balance_snapshot["prior_hour_balance"]
+        prior_advance_pending_balance = self.balance_snapshot["prior_advance_pending_balance"]
         weekly_target_hours = Decimal(str(self.instance.weekly_target_hours or config.default_weekly_hours or "0"))
+        working_line = self.instance
+        if getattr(working_line, "schedule_id", None) is None and self.schedule is not None:
+            working_line.schedule = self.schedule
 
         for index in range(7):
             shift_1_field = f"day_{index}_shift_1"
@@ -490,17 +497,11 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             compensation_hours_field = f"day_{index}_compensation_hours"
             compensation_mode = cleaned_data.get(compensation_mode_field, "") or ""
             compensation_hours = Decimal(str(cleaned_data.get(compensation_hours_field) or "0"))
-            compensation_entries.append(
-                {
-                    "index": index,
-                    "mode": compensation_mode,
-                    "hours": compensation_hours,
-                    "worked_hours": Decimal("0.00"),
-                    "special_generated": False,
-                }
-            )
 
-            if compensation_mode == ScheduleLine.CompensationMode.PAY_DAY:
+            if compensation_mode in {
+                ScheduleLine.CompensationMode.PAY_DAY,
+                ScheduleLine.CompensationMode.ADVANCE_DAY,
+            }:
                 cleaned_data[shift_1_field] = rest_shift_label
                 cleaned_data[shift_2_field] = ""
                 cleaned_data[compensation_hours_field] = Decimal("0.00")
@@ -529,8 +530,6 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             shift_1_hours, _ = resolve_shift_metrics(shift_1_label, config=config, shift_templates=shift_map)
             shift_2_hours, _ = resolve_shift_metrics(shift_2_label, config=config, shift_templates=shift_map)
             day_worked_hours = shift_1_hours + shift_2_hours
-            total_worked_hours += day_worked_hours
-            compensation_entries[-1]["worked_hours"] = day_worked_hours
             if (
                 self.overtime_restriction is not None
                 and self.overtime_restriction_daily_limit is not None
@@ -550,31 +549,20 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 and schedule_for_day.week_start_date
                 and get_special_day_label(schedule_for_day.week_start_date + timedelta(days=index))
             )
-            compensation_entries[-1]["special_generated"] = bool(day_worked_hours > Decimal("0.00") and is_special_day)
-
             if compensation_mode == ScheduleLine.CompensationMode.PAY_DAY and is_special_day:
                 self.add_error(
                     compensation_mode_field,
                     "No puedes pagar dias acumulados en domingo o festivo.",
                 )
+            if compensation_mode == ScheduleLine.CompensationMode.ADVANCE_DAY and is_special_day:
+                self.add_error(
+                    compensation_mode_field,
+                    "El descanso adelantado no se puede aplicar en domingo o festivo.",
+                )
 
             if shift_2 and not shift_1:
                 self.add_error(shift_1_field, "Debes seleccionar primero el turno 1.")
                 self.add_error(shift_2_field, "El turno 2 no puede quedar solo.")
-                continue
-
-            if compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
-                compensated_day_hours = day_worked_hours + compensation_hours
-                if day_worked_hours >= day_reference_hours:
-                    self.add_error(
-                        compensation_hours_field,
-                        "Ese dia ya cumple la jornada con las horas laboradas; no requiere pago por horas.",
-                    )
-                elif compensated_day_hours > day_reference_hours:
-                    self.add_error(
-                        compensation_hours_field,
-                        "El pago por horas supera las horas necesarias para completar la jornada del dia.",
-                    )
             elif (
                 compensation_mode in {
                     ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
@@ -588,14 +576,17 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 )
 
             if not shift_1 or not shift_2:
+                setattr(working_line, shift_1_field, shift_1_label)
+                setattr(working_line, shift_2_field, shift_2_label)
+                setattr(working_line, compensation_mode_field, compensation_mode)
+                setattr(working_line, compensation_hours_field, cleaned_data.get(compensation_hours_field) or Decimal("0.00"))
                 continue
 
             if not shift_1.counts_as_worked_time:
                 self.add_error(shift_2_field, "Si el primer valor es una novedad, el turno 2 debe quedar vacio.")
-                continue
-
-            if not shift_2.counts_as_worked_time:
-                self.add_error(shift_2_field, "Las novedades van solo en el turno 1.")
+            else:
+                if not shift_2.counts_as_worked_time:
+                    self.add_error(shift_2_field, "Las novedades van solo en el turno 1.")
 
             if shift_1.is_full_day_shift:
                 self.add_error(shift_2_field, "Las jornadas continuas van solo en la casilla del turno 1.")
@@ -633,12 +624,80 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                         "El turno 2 debe iniciar despues de que termine el turno 1.",
                     )
 
+            setattr(working_line, shift_1_field, shift_1_label)
+            setattr(working_line, shift_2_field, shift_2_label)
+            setattr(working_line, compensation_mode_field, compensation_mode)
+            setattr(working_line, compensation_hours_field, cleaned_data.get(compensation_hours_field) or Decimal("0.00"))
+
+        for index in range(7):
+            setattr(
+                working_line,
+                f"day_{index}_inventory",
+                bool(cleaned_data.get(f"day_{index}_inventory")),
+            )
+
         manual_day_adjustment = Decimal(str(cleaned_data.get("manual_day_adjustment") or "0"))
         manual_hour_adjustment = Decimal(str(cleaned_data.get("manual_hour_adjustment") or "0"))
+        working_line.manual_day_adjustment = manual_day_adjustment
+        working_line.manual_hour_adjustment = manual_hour_adjustment
+        shift_templates = get_selected_shift_templates(working_line)
+        day_breakdown = build_line_day_breakdown(
+            working_line,
+            config=config,
+            shift_templates=shift_templates,
+        )
+        expected_plan = build_expected_week_plan(
+            working_line,
+            day_breakdown=day_breakdown,
+            config=config,
+            shift_templates=shift_templates,
+        )
+        compensation_entries = build_compensation_entries(
+            working_line,
+            day_breakdown=day_breakdown,
+            expected_plan=expected_plan,
+            config=config,
+            shift_templates=shift_templates,
+        )
+        total_worked_hours = sum(
+            Decimal(str(entry["worked_hours"]))
+            for entry in compensation_entries
+        )
+
+        for entry in compensation_entries:
+            index = int(entry["index"])
+            compensation_mode = str(entry["mode"] or "")
+            compensation_hours = Decimal(str(entry["hours"]))
+            worked_hours = Decimal(str(entry["worked_hours"]))
+            expected_hours = Decimal(str(entry["expected_hours"]))
+            compensation_hours_field = f"day_{index}_compensation_hours"
+
+            if compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
+                compensated_day_hours = worked_hours + compensation_hours
+                if expected_hours <= Decimal("0.00"):
+                    self.add_error(
+                        compensation_hours_field,
+                        "Ese dia no requiere pago por horas porque no es una jornada laborable esperada.",
+                    )
+                elif worked_hours >= expected_hours:
+                    self.add_error(
+                        compensation_hours_field,
+                        "Ese dia ya cumple la jornada esperada y no requiere pago por horas.",
+                    )
+                elif compensated_day_hours > expected_hours:
+                    self.add_error(
+                        compensation_hours_field,
+                        "El pago por horas supera las horas necesarias para completar la jornada esperada del dia.",
+                    )
+
         payment_resolution = resolve_compensation_usage(
             compensation_entries,
             available_day_balance=prior_day_balance + manual_day_adjustment,
             available_hour_balance=prior_hour_balance + manual_hour_adjustment,
+            available_advance_pending_balance=max(
+                prior_advance_pending_balance - max(manual_day_adjustment, Decimal("0.00")),
+                Decimal("0.00"),
+            ),
             day_reference_hours=day_reference_hours,
             weekly_target_hours=self.instance.weekly_target_hours or config.default_weekly_hours,
         )
@@ -671,7 +730,14 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 "Pago en dinero por dia requiere 1 dia acumulado disponible hasta ese dia.",
             )
 
-        weekly_overtime_hours = max(total_worked_hours - weekly_target_hours, Decimal("0.00"))
+        for index in payment_resolution["invalid_advance_day_with_balance_indices"]:
+            self.add_error(
+                f"day_{index}_compensation_mode",
+                "Ese dia ya tiene saldo positivo disponible. Usa pago dia en lugar de descanso adelantado.",
+            )
+
+        expected_weekly_hours = Decimal(str(expected_plan["expected_weekly_hours"]))
+        weekly_overtime_hours = max(total_worked_hours - expected_weekly_hours, Decimal("0.00"))
         if (
             self.overtime_restriction is not None
             and self.overtime_restriction_limit is not None
