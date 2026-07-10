@@ -13,7 +13,7 @@ from django.urls import reverse
 from openpyxl import Workbook, load_workbook
 
 from core.models import Holiday, JobRole, OperationalStaffCache, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
-from legacy.services import OperationalStaffingRecord
+from legacy.services import LegacyStaffLookupError, LegacyThirdPartyRecord, OperationalStaffingRecord
 from schedules.forms import ScheduleLineForm, ScheduleLoadForm
 from schedules.models import (
     EmployeeInitialBalance,
@@ -265,6 +265,66 @@ class ScheduleCalculationTests(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
 
+    def test_form_allows_pay_day_without_positive_day_balance_until_negative_two_days(self):
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="141B",
+            employee_name="Empleado Pago Dia",
+            weekly_target_hours=Decimal("42.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_1_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+                day_2_shift_1="09:00-16:00",
+                day_3_shift_1="09:00-16:00",
+                day_4_shift_1="09:00-16:00",
+                day_5_shift_1="09:00-16:00",
+                day_6_shift_1="09:00-16:00",
+            ),
+            instance=line,
+            schedule=self.schedule,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        updated_line = form.save(commit=False)
+        recalculate_schedule_line(updated_line)
+
+        self.assertEqual(updated_line.expected_weekly_hours, Decimal("35.00"))
+        self.assertEqual(updated_line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(updated_line.accrued_day_balance, Decimal("-1.00"))
+        self.assertEqual(updated_line.advance_rest_pending_balance, Decimal("1.00"))
+
+    def test_form_blocks_additional_rest_that_would_exceed_negative_day_limit(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="141C",
+            employee_name="Empleado Limite",
+            initial_day_balance=Decimal("-2.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="141C",
+            employee_name="Empleado Limite",
+            weekly_target_hours=Decimal("42.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_1_shift_1="descanso",
+                day_2_shift_1="09:00-16:00",
+                day_3_shift_1="09:00-16:00",
+                day_4_shift_1="09:00-16:00",
+                day_5_shift_1="09:00-16:00",
+                day_6_shift_1="09:00-16:00",
+            ),
+            instance=line,
+            schedule=self.schedule,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("day_1_shift_1", form.errors)
+        self.assertIn("limite maximo", form.errors["day_1_shift_1"][0].lower())
+
     def test_form_accepts_pay_hours_using_same_week_overtime_generated_before(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
@@ -464,24 +524,32 @@ class ScheduleCalculationTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("jornadas continuas", form.errors["day_0_shift_2"][0].lower())
 
-    def test_form_rejects_pay_day_without_prior_day_balance(self):
+    def test_form_allows_pay_day_without_prior_day_balance(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
             employee_identifier="130",
             employee_name="Empleado Demo 6",
+            weekly_target_hours=Decimal("42.00"),
+            daily_max_hours=Decimal("8.00"),
         )
         form = ScheduleLineForm(
-            data=self.build_form_data(day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY),
+            data=self.build_form_data(
+                day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+                day_1_shift_1="09:00-16:00",
+                day_3_shift_1="09:00-16:00",
+                day_4_shift_1="09:00-16:00",
+                day_5_shift_1="09:00-16:00",
+                day_6_shift_1="09:00-16:00",
+            ),
             instance=line,
             schedule=self.schedule,
             shift_choices=[],
             secondary_shift_choices=[],
         )
 
-        self.assertFalse(form.is_valid())
-        self.assertIn("hasta ese dia", form.errors["day_2_compensation_mode"][0].lower())
+        self.assertTrue(form.is_valid(), form.errors)
 
-    def test_form_rejects_pay_day_when_only_hour_balance_exists(self):
+    def test_form_allows_pay_day_when_only_hour_balance_exists(self):
         prior_schedule = WeeklySchedule.objects.create(
             site=self.site,
             week_start_date=date(2026, 5, 31),
@@ -498,18 +566,25 @@ class ScheduleCalculationTests(TestCase):
             schedule=self.schedule,
             employee_identifier="130A",
             employee_name="Empleado Solo Horas",
+            weekly_target_hours=Decimal("42.00"),
             daily_max_hours=Decimal("8.00"),
         )
         form = ScheduleLineForm(
-            data=self.build_form_data(day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY),
+            data=self.build_form_data(
+                day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+                day_1_shift_1="09:00-16:00",
+                day_3_shift_1="09:00-16:00",
+                day_4_shift_1="09:00-16:00",
+                day_5_shift_1="09:00-16:00",
+                day_6_shift_1="09:00-16:00",
+            ),
             instance=line,
             schedule=self.schedule,
             shift_choices=[],
             secondary_shift_choices=[],
         )
 
-        self.assertFalse(form.is_valid())
-        self.assertIn("1 dia acumulado", form.errors["day_2_compensation_mode"][0].lower())
+        self.assertTrue(form.is_valid(), form.errors)
 
     def test_form_rejects_pay_day_on_sunday(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -1149,6 +1224,89 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.total_hours, Decimal("28.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
         self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+
+    def test_additional_rest_days_without_pay_day_consume_positive_day_balance(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="4203B",
+            employee_name="Empleado 4203B",
+            initial_day_balance=Decimal("3.00"),
+        )
+        line = self.build_line(
+            week_start=date(2026, 11, 1),
+            employee_identifier="4203B",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                1: "descanso",
+                2: "descanso",
+                3: "09:00-16:00",
+                4: "09:00-16:00",
+                5: "09:00-16:00",
+                6: "09:00-16:00",
+            },
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_work_days, 4)
+        self.assertEqual(line.expected_weekly_hours, Decimal("28.00"))
+        self.assertEqual(line.total_hours, Decimal("28.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(line.advance_rest_pending_balance, Decimal("0.00"))
+
+    def test_additional_rest_day_without_balance_creates_negative_day_balance_without_hour_deficit(self):
+        line = self.build_line(
+            week_start=date(2026, 11, 8),
+            employee_identifier="4203C",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                1: "descanso",
+                2: "09:00-16:00",
+                3: "09:00-16:00",
+                4: "09:00-16:00",
+                5: "09:00-16:00",
+                6: "09:00-16:00",
+            },
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_work_days, 5)
+        self.assertEqual(line.expected_weekly_hours, Decimal("35.00"))
+        self.assertEqual(line.total_hours, Decimal("35.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("-1.00"))
+        self.assertEqual(line.advance_rest_pending_balance, Decimal("1.00"))
+
+    def test_additional_rest_day_can_extend_negative_day_balance_to_minus_two(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="4203D",
+            employee_name="Empleado 4203D",
+            initial_day_balance=Decimal("-1.00"),
+        )
+        line = self.build_line(
+            week_start=date(2026, 11, 15),
+            employee_identifier="4203D",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                1: "descanso",
+                2: "09:00-16:00",
+                3: "09:00-16:00",
+                4: "09:00-16:00",
+                5: "09:00-16:00",
+                6: "09:00-16:00",
+            },
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_work_days, 5)
+        self.assertEqual(line.expected_weekly_hours, Decimal("35.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("-2.00"))
 
     def test_underworked_week_generates_negative_hour_balance(self):
         EmployeeInitialBalance.objects.create(
@@ -1791,6 +1949,33 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.url, reverse("schedules:edit", kwargs={"pk": self.schedule.pk}))
         self.assertFalse(ScheduleLine.objects.filter(pk=self.line.pk).exists())
 
+    @patch(
+        "schedules.views.lookup_third_party_by_identifier",
+        return_value=LegacyThirdPartyRecord(
+            employee_id="555444333",
+            employee_name="Carlos Demo",
+            role_name="Carnicero",
+        ),
+    )
+    def test_manual_lookup_by_name_prefills_identifier_name_and_role(self, _mock_lookup):
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "manual_lookup_submit": "1",
+                "manual-lookup_attempts": "0",
+                "manual-employee_identifier": "Carlos Demo",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'value="555444333"', html=False)
+        self.assertContains(response, 'value="Carlos Demo"', html=False)
+        self.assertContains(response, f'value="{self.job_role.pk}" selected', html=False)
+
     def test_manual_schedule_line_rejects_duplicate_document(self):
         self.client.login(username="operador_delete", password="secret")
 
@@ -2088,6 +2273,79 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertFalse(self.schedule.admin_edit_enabled)
         self.assertTrue(self.schedule.is_closed)
 
+    def test_admin_can_unlock_published_schedule_and_save_line_changes(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier=self.line.employee_identifier,
+            employee_name=self.line.employee_name,
+            initial_day_balance=Decimal("1.00"),
+        )
+        self.line.weekly_target_hours = Decimal("42.00")
+        self.line.daily_max_hours = Decimal("8.00")
+        self.line.save(update_fields=["weekly_target_hours", "daily_max_hours", "updated_at"])
+        self.schedule.status = WeeklySchedule.Status.PUBLISHED
+        self.schedule.save()
+        self.client.login(username="admin_delete", password="secret")
+
+        unlock_response = self.client.post(
+            reverse("schedules:unlock", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(unlock_response.status_code, 302)
+        save_response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.PUBLISHED,
+                notes="Horario republicado",
+                extra={
+                    "lines-0-day_0_shift_1": "",
+                    "lines-0-day_1_shift_1": "",
+                    "lines-0-day_2_shift_1": "descanso",
+                    "lines-0-day_3_shift_1": "09:00-16:00",
+                    "lines-0-day_4_shift_1": "09:00-16:00",
+                    "lines-0-day_5_shift_1": "09:00-16:00",
+                    "lines-0-day_6_shift_1": "09:00-16:00",
+                },
+            ),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(save_response.status_code, 302)
+        self.schedule.refresh_from_db()
+        self.line.refresh_from_db()
+        self.assertEqual(self.schedule.notes, "Horario republicado")
+        self.assertFalse(self.schedule.admin_edit_enabled)
+        self.assertTrue(self.schedule.is_closed)
+        self.assertEqual(self.line.expected_weekly_hours, Decimal("28.00"))
+        self.assertEqual(self.line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(self.line.accrued_day_balance, Decimal("0.00"))
+
+    def test_admin_can_unlock_published_schedule_and_remove_line(self):
+        self.schedule.status = WeeklySchedule.Status.PUBLISHED
+        self.schedule.save()
+        self.client.login(username="admin_delete", password="secret")
+
+        unlock_response = self.client.post(
+            reverse("schedules:unlock", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(unlock_response.status_code, 302)
+        remove_response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "remove_line_id": str(self.line.pk),
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(remove_response.status_code, 302)
+        self.assertFalse(ScheduleLine.objects.filter(pk=self.line.pk).exists())
+
     def test_autosave_keeps_reopened_published_schedule_editable(self):
         self.schedule.status = WeeklySchedule.Status.PUBLISHED
         self.schedule.admin_edit_enabled = True
@@ -2258,6 +2516,29 @@ class ScheduleLoadViewTests(TestCase):
         self.assertEqual(created_line.day_0_shift_1, "08:00-16:00")
         self.assertEqual(created_line.accrued_day_balance, Decimal("5.00"))
         self.assertEqual(future_line.accrued_day_balance, Decimal("5.00"))
+
+    @patch(
+        "schedules.views.sync_schedule_from_legacy",
+        side_effect=LegacyStaffLookupError("No fue posible consultar el personal desde la base de datos."),
+    )
+    def test_schedule_load_shows_legacy_error_without_creating_partial_schedule(self, _mock_sync):
+        self.client.login(username="admin_load", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:load"),
+            {
+                "site": str(self.site.pk),
+                "week_start_date": "2026-07-05",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No fue posible consultar el personal desde la base de datos.")
+        self.assertFalse(
+            WeeklySchedule.objects.filter(site=self.site, week_start_date=date(2026, 7, 5)).exists()
+        )
 
 
 class InitialBalanceUploadViewTests(TestCase):

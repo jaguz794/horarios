@@ -8,6 +8,11 @@
 <section class="panel slim-panel">
   <form method="post" class="stack-form">
     {% csrf_token %}
+    {% if form.non_field_errors %}
+    <div class="form-errors">
+      {{ form.non_field_errors }}
+    </div>
+    {% endif %}
     <div class="field-grid">
       {% for field in form %}
       <label class="field-group">

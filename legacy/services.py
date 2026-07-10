@@ -1,11 +1,16 @@
 from dataclasses import dataclass
 from datetime import date
+import logging
+import re
 
 from django.db import connections, transaction
 from django.utils import timezone
 
 from core.models import Department, JobRole, OperationalStaffCache, Site, SystemConfiguration
 from legacy.models import LegacyCostCenter, LegacyEmployee, LegacyOperationalSite
+
+logger = logging.getLogger(__name__)
+DOCUMENT_NUMBER_PATTERN = re.compile(r"^[0-9A-Za-z-]{3,30}$")
 
 SITE_ALIAS_MAP = {
     "001": "RIOJA",
@@ -39,6 +44,17 @@ class OperationalStaffingRecord:
 class LegacyThirdPartyRecord:
     employee_id: str
     employee_name: str
+    site_code: str = ""
+    role_code: str = ""
+    role_name: str = ""
+
+
+class LegacyStaffLookupError(RuntimeError):
+    pass
+
+
+class LegacyStaffAmbiguousMatchError(LegacyStaffLookupError):
+    pass
 
 
 def compose_employee_name(
@@ -235,9 +251,18 @@ def fetch_operational_staff_from_legacy(
             TRIM(COALESCE(t.nombres, ''))
     """
 
-    with connections["legacy"].cursor() as cursor:
-        cursor.execute(legacy_query, params)
-        rows = cursor.fetchall()
+    try:
+        with connections["legacy"].cursor() as cursor:
+            cursor.execute(legacy_query, params)
+            rows = cursor.fetchall()
+    except Exception as exc:
+        logger.exception(
+            "Fallo consultando personal operativo legacy para sedes=%s",
+            cleaned_site_codes or "todas",
+        )
+        raise LegacyStaffLookupError(
+            "No fue posible consultar el personal desde la base de datos."
+        ) from exc
 
     site_filter = set(cleaned_site_codes) if cleaned_site_codes else None
     return _build_operational_staff_records(rows, site_filter=site_filter)
@@ -356,12 +381,41 @@ def fetch_active_staff_for_site(
 
 
 def lookup_third_party_by_identifier(employee_identifier: str) -> LegacyThirdPartyRecord | None:
-    cleaned_identifier = (employee_identifier or "").strip()
-    if not cleaned_identifier:
+    cleaned_query = " ".join((employee_identifier or "").split()).strip()
+    if not cleaned_query:
         return None
-
-    lookup_query = """
+    identifier_query = """
+        SELECT DISTINCT
+            TRIM(c.id_terc) AS id_terc,
+            TRIM(COALESCE(t.nombres, '')) AS nombres,
+            TRIM(COALESCE(t.apellido1, '')) AS apellido1,
+            TRIM(COALESCE(t.apellido2, '')) AS apellido2,
+            TRIM(COALESCE(c.id_co, '')) AS id_co,
+            TRIM(COALESCE(c.id_cargo, '')) AS id_cargo,
+            TRIM(COALESCE(p.descripcion_cargo, '')) AS descripcion_cargo
+        FROM contratos c
+        LEFT JOIN terceros t
+            ON TRIM(t.codigo) = TRIM(c.id_terc)
+        LEFT JOIN (
+            SELECT DISTINCT ON (id_contrato)
+                id_contrato,
+                descripcion_cargo
+            FROM nmresumen_pagos_nomina
+            ORDER BY id_contrato, lapso_doc DESC, fecha_gen DESC
+        ) p
+            ON p.id_contrato = c.codigo
+        WHERE
+            c.estado = 'A'
+            AND TRIM(COALESCE(c.grupo_empleados, '')) = '02'
+            AND TRIM(c.id_terc) = %s
+        ORDER BY
+            TRIM(COALESCE(t.apellido1, '')),
+            TRIM(COALESCE(t.nombres, ''))
+        LIMIT 1
+    """
+    third_party_query = """
         SELECT
+            TRIM(COALESCE(codigo, '')) AS codigo,
             TRIM(COALESCE(nombres, '')) AS nombres,
             TRIM(COALESCE(apellido1, '')) AS apellido1,
             TRIM(COALESCE(apellido2, '')) AS apellido2
@@ -369,19 +423,93 @@ def lookup_third_party_by_identifier(employee_identifier: str) -> LegacyThirdPar
         WHERE TRIM(codigo) = %s
         LIMIT 1
     """
-    with connections["legacy"].cursor() as cursor:
-        cursor.execute(lookup_query, [cleaned_identifier])
-        row = cursor.fetchone()
+    name_lookup_query = """
+        SELECT DISTINCT
+            TRIM(c.id_terc) AS id_terc,
+            TRIM(COALESCE(t.nombres, '')) AS nombres,
+            TRIM(COALESCE(t.apellido1, '')) AS apellido1,
+            TRIM(COALESCE(t.apellido2, '')) AS apellido2,
+            TRIM(COALESCE(c.id_co, '')) AS id_co,
+            TRIM(COALESCE(c.id_cargo, '')) AS id_cargo,
+            TRIM(COALESCE(p.descripcion_cargo, '')) AS descripcion_cargo
+        FROM contratos c
+        LEFT JOIN terceros t
+            ON TRIM(t.codigo) = TRIM(c.id_terc)
+        LEFT JOIN (
+            SELECT DISTINCT ON (id_contrato)
+                id_contrato,
+                descripcion_cargo
+            FROM nmresumen_pagos_nomina
+            ORDER BY id_contrato, lapso_doc DESC, fecha_gen DESC
+        ) p
+            ON p.id_contrato = c.codigo
+        WHERE
+            c.estado = 'A'
+            AND TRIM(COALESCE(c.grupo_empleados, '')) = '02'
+            AND UPPER(
+                TRIM(
+                    COALESCE(t.nombres, '') || ' ' || COALESCE(t.apellido1, '') || ' ' || COALESCE(t.apellido2, '')
+                )
+            ) LIKE UPPER(%s)
+        ORDER BY
+            TRIM(COALESCE(t.apellido1, '')),
+            TRIM(COALESCE(t.nombres, ''))
+        LIMIT 10
+    """
+    try:
+        with connections["legacy"].cursor() as cursor:
+            if DOCUMENT_NUMBER_PATTERN.fullmatch(cleaned_query):
+                cursor.execute(identifier_query, [cleaned_query.upper()])
+                row = cursor.fetchone()
+                if row:
+                    employee_id, names, surname_1, surname_2, site_code, role_code, role_name = row
+                    employee_name = compose_employee_name(names, surname_1, surname_2)
+                    return LegacyThirdPartyRecord(
+                        employee_id=(employee_id or cleaned_query).strip(),
+                        employee_name=employee_name,
+                        site_code=(site_code or "").strip(),
+                        role_code=(role_code or "").strip(),
+                        role_name=(role_name or "").strip(),
+                    )
 
-    if not row:
+                cursor.execute(third_party_query, [cleaned_query.upper()])
+                third_party_row = cursor.fetchone()
+                if not third_party_row:
+                    return None
+                employee_id, names, surname_1, surname_2 = third_party_row
+                employee_name = compose_employee_name(names, surname_1, surname_2)
+                if not employee_name:
+                    return None
+                return LegacyThirdPartyRecord(
+                    employee_id=(employee_id or cleaned_query).strip(),
+                    employee_name=employee_name,
+                )
+
+            like_query = f"%{'%'.join(cleaned_query.split())}%"
+            cursor.execute(name_lookup_query, [like_query])
+            rows = cursor.fetchall()
+    except Exception as exc:
+        logger.exception("Fallo consultando terceros legacy para termino=%s", cleaned_query)
+        raise LegacyStaffLookupError(
+            "No fue posible consultar el personal desde la base de datos."
+        ) from exc
+
+    if not rows:
         return None
+    if len(rows) > 1:
+        raise LegacyStaffAmbiguousMatchError(
+            "Se encontraron varias personas con ese nombre. Usa la cedula para continuar."
+        )
 
-    names, surname_1, surname_2 = row
+    employee_id, names, surname_1, surname_2, site_code, role_code, role_name = rows[0]
     employee_name = compose_employee_name(names, surname_1, surname_2)
     if not employee_name:
         return None
 
     return LegacyThirdPartyRecord(
-        employee_id=cleaned_identifier,
+        employee_id=(employee_id or "").strip(),
         employee_name=employee_name,
+        site_code=(site_code or "").strip(),
+        role_code=(role_code or "").strip(),
+        role_name=(role_name or "").strip(),
     )

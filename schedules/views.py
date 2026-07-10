@@ -9,7 +9,7 @@ from django.views import View
 from django.views.generic import FormView, ListView, TemplateView
 
 from core.access import get_accessible_schedules_queryset, user_can_delete_schedules, user_can_manage_all_sites
-from core.models import SystemConfiguration
+from core.models import JobRole, SystemConfiguration
 from schedules.forms import (
     DOCUMENT_NUMBER_PATTERN,
     InitialBalanceUploadForm,
@@ -35,7 +35,11 @@ from schedules.services import (
     sync_schedule_from_legacy,
 )
 from schedules.settlement_pdf import generate_and_store_schedule_settlement
-from legacy.services import lookup_third_party_by_identifier
+from legacy.services import (
+    LegacyStaffAmbiguousMatchError,
+    LegacyStaffLookupError,
+    lookup_third_party_by_identifier,
+)
 
 
 class ScheduleListView(LoginRequiredMixin, ListView):
@@ -92,45 +96,50 @@ class ScheduleLoadView(LoginRequiredMixin, FormView):
         site = form.cleaned_data["site"]
         week_start_date = form.cleaned_data["week_start_date"]
         copy_from_schedule = form.cleaned_data.get("copy_from_schedule")
-        schedule, created = WeeklySchedule.objects.get_or_create(
-            site=site,
-            week_start_date=week_start_date,
-            defaults={
-                "first_day_index": config.week_start_day,
-                "created_by": self.request.user,
-                "updated_by": self.request.user,
-            },
-        )
-        if not created and not schedule.is_closed:
-            schedule.updated_by = self.request.user
-            schedule.save(update_fields=["updated_by", "updated_at"])
-        if not created and schedule.is_closed:
-            messages.info(self.request, "El horario ya esta publicado y se abrio en modo cerrado.")
-            return redirect("schedules:edit", pk=schedule.pk)
-
-        if created:
-            created_count, updated_count = sync_schedule_from_legacy(schedule)
-            messages.success(
-                self.request,
-                f"Horario cargado. Nuevos: {created_count}. Actualizados: {updated_count}. "
-                "Los saldos relacionados se recalcularon automaticamente.",
-            )
-        else:
-            messages.info(self.request, "Se abrio el horario existente sin recargar personal.")
-
-        if copy_from_schedule and not schedule.is_closed:
-            copied_count, source_line_count = copy_schedule_template(copy_from_schedule, schedule)
-            if copied_count:
-                messages.success(
-                    self.request,
-                    f"Plantilla copiada desde la semana {copy_from_schedule.week_start_date:%d/%m/%Y}. "
-                    f"Se actualizaron {copied_count} trabajador(es).",
+        try:
+            with transaction.atomic():
+                schedule, created = WeeklySchedule.objects.get_or_create(
+                    site=site,
+                    week_start_date=week_start_date,
+                    defaults={
+                        "first_day_index": config.week_start_day,
+                        "created_by": self.request.user,
+                        "updated_by": self.request.user,
+                    },
                 )
-            else:
-                messages.warning(
-                    self.request,
-                    f"La semana base tenia {source_line_count} registro(s), pero no hubo coincidencias para copiar en esta sede.",
-                )
+                if not created and not schedule.is_closed:
+                    schedule.updated_by = self.request.user
+                    schedule.save(update_fields=["updated_by", "updated_at"])
+                if not created and schedule.is_closed:
+                    messages.info(self.request, "El horario ya esta publicado y se abrio en modo cerrado.")
+                    return redirect("schedules:edit", pk=schedule.pk)
+
+                if created:
+                    created_count, updated_count = sync_schedule_from_legacy(schedule)
+                    messages.success(
+                        self.request,
+                        f"Horario cargado. Nuevos: {created_count}. Actualizados: {updated_count}. "
+                        "Los saldos relacionados se recalcularon automaticamente.",
+                    )
+                else:
+                    messages.info(self.request, "Se abrio el horario existente sin recargar personal.")
+
+                if copy_from_schedule and not schedule.is_closed:
+                    copied_count, source_line_count = copy_schedule_template(copy_from_schedule, schedule)
+                    if copied_count:
+                        messages.success(
+                            self.request,
+                            f"Plantilla copiada desde la semana {copy_from_schedule.week_start_date:%d/%m/%Y}. "
+                            f"Se actualizaron {copied_count} trabajador(es).",
+                        )
+                    else:
+                        messages.warning(
+                            self.request,
+                            f"La semana base tenia {source_line_count} registro(s), pero no hubo coincidencias para copiar en esta sede.",
+                        )
+        except LegacyStaffLookupError as exc:
+            form.add_error(None, f"{exc} Revisa la conexion o los registros del servidor.")
+            return self.form_invalid(form)
 
         return redirect("schedules:edit", pk=schedule.pk)
 
@@ -235,50 +244,76 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
         if "manual_lookup_submit" in request.POST:
             attempts = int(request.POST.get("manual-lookup_attempts", "0") or "0")
             next_attempts = attempts + 1
-            identifier = (request.POST.get("manual-employee_identifier", "") or "").strip().upper()
+            lookup_value = " ".join((request.POST.get("manual-employee_identifier", "") or "").split()).strip()
+            is_document_lookup = bool(DOCUMENT_NUMBER_PATTERN.fullmatch(lookup_value.upper()))
             data = request.POST.copy()
             data["manual-lookup_attempts"] = str(next_attempts)
             manual_name_enabled = False
             lookup_found = False
 
-            if not DOCUMENT_NUMBER_PATTERN.fullmatch(identifier):
+            if len(lookup_value) < 3:
                 messages.error(
                     request,
-                    "Ingresa un numero de documento valido para consultar el tercero.",
+                    "Ingresa una cedula o un nombre valido para consultar la persona.",
                 )
-            elif schedule_accepts_blacklisted_staff(schedule) and not is_employee_blacklisted(identifier):
-                messages.error(
-                    request,
-                    "Para cargar personal_vario primero debes registrar la cedula en la lista negra.",
-                )
-            elif is_employee_blacklisted(identifier) and not schedule_accepts_blacklisted_staff(schedule):
-                messages.error(
-                    request,
-                    "Ese numero de documento esta bloqueado en la lista negra y no puede cargarse en horarios.",
-                )
-            elif ScheduleLine.objects.filter(schedule=schedule, employee_identifier=identifier).exists():
-                messages.error(request, "Ese numero de documento ya existe en este horario.")
             else:
-                lookup_result = lookup_third_party_by_identifier(identifier)
-                if lookup_result:
-                    data["manual-employee_name"] = lookup_result.employee_name
-                    lookup_found = True
-                    messages.success(
-                        request,
-                        f"Persona encontrada en terceros: {lookup_result.employee_name}. Ahora selecciona el cargo y agrega la persona.",
+                try:
+                    lookup_result = lookup_third_party_by_identifier(
+                        lookup_value.upper() if is_document_lookup else lookup_value
                     )
+                except LegacyStaffAmbiguousMatchError as exc:
+                    messages.warning(request, str(exc))
+                except LegacyStaffLookupError as exc:
+                    messages.error(request, f"{exc} Revisa la conexion o los registros del servidor.")
                 else:
-                    manual_name_enabled = next_attempts >= 2
-                    if manual_name_enabled:
-                        messages.warning(
-                            request,
-                            "La persona no esta creada en el sistema. Ya puedes ingresar manualmente el nombre y el cargo.",
-                        )
+                    if lookup_result:
+                        resolved_identifier = (lookup_result.employee_id or lookup_value).strip().upper()
+                        if schedule_accepts_blacklisted_staff(schedule) and not is_employee_blacklisted(resolved_identifier):
+                            messages.error(
+                                request,
+                                "Para cargar personal_vario primero debes registrar la cedula en la lista negra.",
+                            )
+                        elif is_employee_blacklisted(resolved_identifier) and not schedule_accepts_blacklisted_staff(schedule):
+                            messages.error(
+                                request,
+                                "Ese numero de documento esta bloqueado en la lista negra y no puede cargarse en horarios.",
+                            )
+                        elif ScheduleLine.objects.filter(schedule=schedule, employee_identifier=resolved_identifier).exists():
+                            messages.error(request, "Ese numero de documento ya existe en este horario.")
+                        else:
+                            data["manual-employee_identifier"] = resolved_identifier
+                            data["manual-employee_name"] = lookup_result.employee_name
+                            if lookup_result.role_name:
+                                matched_role = (
+                                    JobRole.objects.filter(name__iexact=lookup_result.role_name.strip())
+                                    .order_by("name")
+                                    .first()
+                                )
+                                if matched_role and not data.get("manual-job_role"):
+                                    data["manual-job_role"] = str(matched_role.pk)
+                            lookup_found = True
+                            messages.success(
+                                request,
+                                f"Persona encontrada en terceros: {lookup_result.employee_name}. "
+                                "Ahora selecciona o confirma el cargo y agrega la persona.",
+                            )
                     else:
-                        messages.warning(
-                            request,
-                            "La persona no esta creada en el sistema. Consulta una vez mas para habilitar el cargue manual.",
-                        )
+                        manual_name_enabled = is_document_lookup and next_attempts >= 2
+                        if manual_name_enabled:
+                            messages.warning(
+                                request,
+                                "La persona no esta creada en el sistema. Ya puedes ingresar manualmente el nombre y el cargo.",
+                            )
+                        elif is_document_lookup:
+                            messages.warning(
+                                request,
+                                "La persona no esta creada en el sistema. Consulta una vez mas para habilitar el cargue manual.",
+                            )
+                        else:
+                            messages.warning(
+                                request,
+                                "No se encontro una persona activa con ese nombre. Intenta con la cedula para continuar.",
+                            )
 
             manual_add_form = self.get_manual_add_form(
                 schedule,
@@ -425,7 +460,11 @@ class ScheduleRefreshView(LoginRequiredMixin, View):
         if schedule.is_closed:
             messages.error(request, "El horario publicado esta cerrado y no se puede recargar personal.")
             return redirect(reverse("schedules:edit", kwargs={"pk": schedule.pk}))
-        created_count, updated_count = sync_schedule_from_legacy(schedule)
+        try:
+            created_count, updated_count = sync_schedule_from_legacy(schedule)
+        except LegacyStaffLookupError as exc:
+            messages.error(request, f"{exc} Revisa la conexion o los registros del servidor.")
+            return redirect(reverse("schedules:edit", kwargs={"pk": schedule.pk}))
         messages.success(
             request,
             f"Personal actualizado. Nuevos: {created_count}. Actualizados: {updated_count}.",

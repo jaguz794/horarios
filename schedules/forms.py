@@ -11,7 +11,11 @@ from django.utils import timezone
 
 from core.access import get_accessible_schedules_queryset, get_accessible_sites_queryset
 from core.models import JobRole, ShiftTemplate, Site, SystemConfiguration
-from legacy.services import lookup_third_party_by_identifier
+from legacy.services import (
+    LegacyStaffAmbiguousMatchError,
+    LegacyStaffLookupError,
+    lookup_third_party_by_identifier,
+)
 from schedules.calendar_utils import get_special_day_label
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
@@ -190,9 +194,9 @@ class WeeklyScheduleForm(StyledFormMixin, forms.ModelForm):
 
 class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
     employee_identifier = forms.CharField(
-        label="Numero documento",
+        label="Cedula o nombre",
         max_length=30,
-        widget=forms.TextInput(attrs={"placeholder": "Ej. 1000123456"}),
+        widget=forms.TextInput(attrs={"placeholder": "Ej. 1000123456 o Carlos Perez"}),
     )
     lookup_attempts = forms.IntegerField(widget=forms.HiddenInput(), required=False, initial=0)
     employee_name = forms.CharField(
@@ -261,7 +265,15 @@ class ScheduleLineManualAddForm(StyledFormMixin, forms.Form):
 
         employee_identifier = cleaned_data.get("employee_identifier", "")
         lookup_attempts = int(cleaned_data.get("lookup_attempts") or 0)
-        lookup_result = lookup_third_party_by_identifier(employee_identifier)
+        if self.lookup_found and not self.manual_name_enabled:
+            cleaned_data["employee_name"] = " ".join((cleaned_data.get("employee_name") or "").split())
+            return cleaned_data
+        try:
+            lookup_result = lookup_third_party_by_identifier(employee_identifier)
+        except LegacyStaffAmbiguousMatchError as exc:
+            raise forms.ValidationError(str(exc)) from exc
+        except LegacyStaffLookupError as exc:
+            raise forms.ValidationError(f"{exc} Revisa la conexion o los registros del servidor.") from exc
         self.lookup_result = lookup_result
 
         if lookup_result:
@@ -706,7 +718,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         for index in payment_resolution["invalid_pay_day_indices"]:
             self.add_error(
                 f"day_{index}_compensation_mode",
-                "Pago dia requiere 1 dia acumulado disponible hasta ese dia.",
+                ADVANCE_REST_LIMIT_ERROR_MESSAGE,
             )
 
         for index in payment_resolution["invalid_pay_hours_indices"]:
@@ -741,6 +753,12 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             self.add_error(
                 f"day_{index}_compensation_mode",
                 "Ese dia ya tiene saldo positivo disponible. Usa pago dia en lugar de descanso adelantado.",
+            )
+
+        for index in payment_resolution["invalid_auto_rest_day_indices"]:
+            self.add_error(
+                f"day_{index}_shift_1",
+                ADVANCE_REST_LIMIT_ERROR_MESSAGE,
             )
 
         expected_weekly_hours = Decimal(str(expected_plan["expected_weekly_hours"]))
