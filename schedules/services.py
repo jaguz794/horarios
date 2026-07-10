@@ -339,6 +339,35 @@ def get_daily_overtime_hours(worked_hours: Decimal, day_reference_hours: Decimal
     ).quantize(TWO_DECIMALS)
 
 
+def calculate_weekly_hour_metrics(
+    *,
+    total_worked_hours: Decimal,
+    expected_weekly_hours: Decimal,
+    weekly_target_hours: Decimal | None,
+) -> dict[str, Decimal]:
+    total_worked_hours = decimal_hours(total_worked_hours)
+    expected_weekly_hours = decimal_hours(expected_weekly_hours)
+    weekly_target_hours = decimal_hours(weekly_target_hours or "0")
+    overtime_threshold_hours = (
+        weekly_target_hours
+        if weekly_target_hours > Decimal("0.00")
+        else expected_weekly_hours
+    )
+    missing_hours = max(expected_weekly_hours - total_worked_hours, Decimal("0.00")).quantize(TWO_DECIMALS)
+    overtime_hours = max(total_worked_hours - overtime_threshold_hours, Decimal("0.00")).quantize(TWO_DECIMALS)
+    hour_balance_delta = (overtime_hours - missing_hours).quantize(TWO_DECIMALS)
+    expected_difference = (total_worked_hours - expected_weekly_hours).quantize(TWO_DECIMALS)
+    return {
+        "total_worked_hours": total_worked_hours,
+        "expected_weekly_hours": expected_weekly_hours,
+        "overtime_threshold_hours": overtime_threshold_hours.quantize(TWO_DECIMALS),
+        "missing_hours": missing_hours,
+        "overtime_hours": overtime_hours,
+        "hour_balance_delta": hour_balance_delta,
+        "expected_difference": expected_difference,
+    }
+
+
 def get_selected_shift_templates(line: ScheduleLine) -> dict[str, ShiftTemplate]:
     selected_labels = {
         normalize_shift_label(getattr(line, f"day_{index}_shift_{slot}"))
@@ -466,22 +495,24 @@ def build_expected_week_plan(
         day_date = day_info["date"]
         compensation_mode = str(day_info.get("compensation_mode") or "")
         special_label = str(day_info.get("special_label") or "")
+        worked_hours = decimal_hours(day_info["worked_hours"])
         is_non_sunday_holiday = day_date.weekday() != 6 and "Festivo" in special_label
+        is_unworked_non_sunday_holiday = is_non_sunday_holiday and worked_hours == Decimal("0.00")
         shift_categories = {
             get_shift_non_work_category(str(day_info.get("shift_1_label") or ""), shift_templates=shift_templates),
             get_shift_non_work_category(str(day_info.get("shift_2_label") or ""), shift_templates=shift_templates),
         }
         is_leave_day = (
-            decimal_hours(day_info["worked_hours"]) == Decimal("0.00")
+            worked_hours == Decimal("0.00")
             and "leave" in shift_categories
-            and not is_non_sunday_holiday
+            and not is_unworked_non_sunday_holiday
             and compensation_mode not in {ScheduleLine.CompensationMode.PAY_DAY, *ADVANCE_DAY_COMPENSATION_MODES}
         )
         is_additional_rest_day = (
             compensation_mode == ScheduleLine.CompensationMode.NONE
-            and decimal_hours(day_info["worked_hours"]) == Decimal("0.00")
+            and worked_hours == Decimal("0.00")
             and "rest" in shift_categories
-            and not is_non_sunday_holiday
+            and not is_unworked_non_sunday_holiday
             and not is_leave_day
             and index in scope_indexes
             and index != mandatory_rest_index
@@ -495,7 +526,7 @@ def build_expected_week_plan(
         if index == mandatory_rest_index:
             expected_hours = Decimal("0.00")
             expected_reason = "descanso_obligatorio"
-        if is_non_sunday_holiday:
+        if is_unworked_non_sunday_holiday:
             expected_hours = Decimal("0.00")
             expected_reason = "festivo"
         if compensation_mode == ScheduleLine.CompensationMode.PAY_DAY:
@@ -741,7 +772,6 @@ def resolve_compensation_usage(
         compensation_mode = str(entry.get("mode") or "")
         compensation_hours = decimal_hours(entry.get("hours", Decimal("0.00")) or "0")
         worked_hours = decimal_hours(entry.get("worked_hours", Decimal("0.00")) or "0")
-        expected_hours = decimal_hours(entry.get("expected_hours", Decimal("0.00")) or "0")
         is_additional_rest_day = bool(entry.get("is_additional_rest_day"))
         special_generated = bool(entry.get("special_generated"))
         day_state: dict[str, Decimal | str | bool] = {
@@ -860,12 +890,6 @@ def resolve_compensation_usage(
                 remaining_advance_pending_balance = (
                     remaining_advance_pending_balance - offset_days
                 ).quantize(TWO_DECIMALS)
-
-        hour_difference = (worked_hours - expected_hours).quantize(TWO_DECIMALS)
-        remaining_hour_balance = (remaining_hour_balance + hour_difference).quantize(TWO_DECIMALS)
-        if hour_difference > Decimal("0.00"):
-            day_state["generated_hours"] = hour_difference
-        day_state["hour_difference"] = hour_difference
 
         day_state["remaining_day_balance"] = remaining_day_balance
         day_state["remaining_hour_balance"] = remaining_hour_balance
@@ -1258,10 +1282,24 @@ def get_schedule_line_compact_alert_summary(
     )
     manual_day_adjustment = decimal_hours(line.manual_day_adjustment)
     manual_hour_adjustment = decimal_hours(line.manual_hour_adjustment)
+    total_worked_hours = sum(
+        decimal_hours(entry["worked_hours"])
+        for entry in compensation_entries
+    ).quantize(TWO_DECIMALS)
+    weekly_hour_metrics = calculate_weekly_hour_metrics(
+        total_worked_hours=total_worked_hours,
+        expected_weekly_hours=decimal_hours(expected_plan["expected_weekly_hours"]),
+        weekly_target_hours=line.weekly_target_hours or config.default_weekly_hours,
+    )
     payment_resolution = resolve_compensation_usage(
         compensation_entries,
         available_day_balance=balance_snapshot["prior_day_balance"] + manual_day_adjustment,
-        available_hour_balance=balance_snapshot["prior_hour_balance"] + manual_hour_adjustment,
+        available_hour_balance=max(
+            balance_snapshot["prior_hour_balance"]
+            + manual_hour_adjustment
+            + weekly_hour_metrics["hour_balance_delta"],
+            Decimal("0.00"),
+        ),
         available_advance_pending_balance=max(
             balance_snapshot["prior_advance_pending_balance"] - max(manual_day_adjustment, Decimal("0.00")),
             Decimal("0.00"),
@@ -1407,8 +1445,13 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     line.total_hours = total_hours.quantize(TWO_DECIMALS)
     line.expected_work_days = int(expected_plan["expected_work_days"])
     line.expected_weekly_hours = decimal_hours(expected_plan["expected_weekly_hours"])
-    line.weekly_hour_difference = (line.total_hours - line.expected_weekly_hours).quantize(TWO_DECIMALS)
-    line.overtime_hours = max(line.weekly_hour_difference, Decimal("0.00")).quantize(TWO_DECIMALS)
+    weekly_hour_metrics = calculate_weekly_hour_metrics(
+        total_worked_hours=line.total_hours,
+        expected_weekly_hours=line.expected_weekly_hours,
+        weekly_target_hours=weekly_target,
+    )
+    line.weekly_hour_difference = weekly_hour_metrics["expected_difference"]
+    line.overtime_hours = weekly_hour_metrics["overtime_hours"]
     line.night_bonus_hours = total_night_bonus.quantize(TWO_DECIMALS)
     line.special_days_generated = special_days_generated
 
@@ -1419,7 +1462,10 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     payment_resolution = resolve_compensation_usage(
         compensation_entries,
         available_day_balance=prior_day_balance + manual_day_adjustment,
-        available_hour_balance=prior_hour_balance + manual_hour_adjustment,
+        available_hour_balance=max(
+            prior_hour_balance + manual_hour_adjustment + weekly_hour_metrics["hour_balance_delta"],
+            Decimal("0.00"),
+        ),
         available_advance_pending_balance=max(
             balance_snapshot["prior_advance_pending_balance"] - max(manual_day_adjustment, Decimal("0.00")),
             Decimal("0.00"),
@@ -1448,7 +1494,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     ).quantize(TWO_DECIMALS)
     line.accrued_hour_balance = (
         prior_hour_balance
-        + line.weekly_hour_difference
+        + weekly_hour_metrics["hour_balance_delta"]
         + manual_hour_adjustment
         - payment_hours
         - money_payment_hours
@@ -1458,7 +1504,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         line.accrued_hour_balance + (line.accrued_day_balance * day_reference_hours)
     ).quantize(TWO_DECIMALS)
 
-    if line.weekly_hour_difference < Decimal("0.00"):
+    if weekly_hour_metrics["missing_hours"] > Decimal("0.00"):
         warnings.append(
             "No cumple las horas esperadas de la semana: "
             f"{line.total_hours} h programadas vs {line.expected_weekly_hours} h esperadas "
@@ -1532,10 +1578,21 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
         shift_templates=shift_templates,
     )
     balance_snapshot = get_schedule_line_balance_snapshot(line, config=config)
+    total_worked_hours = sum(decimal_hours(day_info["worked_hours"]) for day_info in day_breakdown).quantize(TWO_DECIMALS)
+    weekly_hour_metrics = calculate_weekly_hour_metrics(
+        total_worked_hours=total_worked_hours,
+        expected_weekly_hours=decimal_hours(expected_plan["expected_weekly_hours"]),
+        weekly_target_hours=line.weekly_target_hours or config.default_weekly_hours,
+    )
     payment_resolution = resolve_compensation_usage(
         compensation_entries,
         available_day_balance=balance_snapshot["prior_day_balance"] + decimal_hours(line.manual_day_adjustment),
-        available_hour_balance=balance_snapshot["prior_hour_balance"] + decimal_hours(line.manual_hour_adjustment),
+        available_hour_balance=max(
+            balance_snapshot["prior_hour_balance"]
+            + decimal_hours(line.manual_hour_adjustment)
+            + weekly_hour_metrics["hour_balance_delta"],
+            Decimal("0.00"),
+        ),
         available_advance_pending_balance=max(
             balance_snapshot["prior_advance_pending_balance"] - max(decimal_hours(line.manual_day_adjustment), Decimal("0.00")),
             Decimal("0.00"),
@@ -1546,14 +1603,12 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
     movement_date_default = line.schedule.week_end_date or line.schedule.week_start_date
     movements: list[ScheduleBalanceMovement] = []
 
-    entries_by_index = {int(entry["index"]): entry for entry in compensation_entries}
     day_states = payment_resolution["day_states"]
 
     for day_info in day_breakdown:
         day_date = day_info["date"]
         worked_hours = decimal_hours(day_info["worked_hours"])
         special_label = str(day_info["special_label"] or "")
-        compensation_entry = entries_by_index.get(int(day_info["index"]), {})
         day_state = day_states.get(int(day_info["index"]), {})
 
         if worked_hours > Decimal("0.00") and special_label:
@@ -1666,36 +1721,6 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
                 )
             )
 
-        hour_difference = (
-            decimal_hours(compensation_entry.get("worked_hours", Decimal("0.00")) or "0")
-            - decimal_hours(compensation_entry.get("expected_hours", Decimal("0.00")) or "0")
-        ).quantize(TWO_DECIMALS)
-        if hour_difference != Decimal("0.00"):
-            movements.append(
-                ScheduleBalanceMovement(
-                    schedule=line.schedule,
-                    line=line,
-                    site=line.schedule.site,
-                    employee_identifier=line.employee_identifier,
-                    employee_name=line.employee_name,
-                    job_role_name=line.job_role_name,
-                    movement_date=day_date,
-                    movement_type=(
-                        ScheduleBalanceMovement.MovementType.OVERTIME
-                        if hour_difference > Decimal("0.00")
-                        else ScheduleBalanceMovement.MovementType.HOUR_DEFICIT
-                    ),
-                    quantity_days=Decimal("0.00"),
-                    quantity_hours=hour_difference,
-                    equivalent_hours=hour_difference,
-                    description=(
-                        "Horas adicionales del dia"
-                        if hour_difference > Decimal("0.00")
-                        else "Horas faltantes del dia"
-                    ),
-                )
-            )
-
     manual_day_adjustment = decimal_hours(line.manual_day_adjustment)
     if manual_day_adjustment != Decimal("0.00"):
         movements.append(
@@ -1712,6 +1737,42 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
                 quantity_hours=Decimal("0.00"),
                 equivalent_hours=(manual_day_adjustment * day_reference_hours).quantize(TWO_DECIMALS),
                 description="Ajuste manual de dias",
+            )
+        )
+
+    if weekly_hour_metrics["overtime_hours"] > Decimal("0.00"):
+        movements.append(
+            ScheduleBalanceMovement(
+                schedule=line.schedule,
+                line=line,
+                site=line.schedule.site,
+                employee_identifier=line.employee_identifier,
+                employee_name=line.employee_name,
+                job_role_name=line.job_role_name,
+                movement_date=movement_date_default,
+                movement_type=ScheduleBalanceMovement.MovementType.OVERTIME,
+                quantity_days=Decimal("0.00"),
+                quantity_hours=weekly_hour_metrics["overtime_hours"],
+                equivalent_hours=weekly_hour_metrics["overtime_hours"],
+                description="Horas extra generadas en la semana",
+            )
+        )
+    elif weekly_hour_metrics["missing_hours"] > Decimal("0.00"):
+        missing_hours = (weekly_hour_metrics["missing_hours"] * Decimal("-1.00")).quantize(TWO_DECIMALS)
+        movements.append(
+            ScheduleBalanceMovement(
+                schedule=line.schedule,
+                line=line,
+                site=line.schedule.site,
+                employee_identifier=line.employee_identifier,
+                employee_name=line.employee_name,
+                job_role_name=line.job_role_name,
+                movement_date=movement_date_default,
+                movement_type=ScheduleBalanceMovement.MovementType.HOUR_DEFICIT,
+                quantity_days=Decimal("0.00"),
+                quantity_hours=missing_hours,
+                equivalent_hours=missing_hours,
+                description="Horas faltantes de la semana",
             )
         )
 
