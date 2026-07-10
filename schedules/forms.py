@@ -15,6 +15,7 @@ from legacy.services import lookup_third_party_by_identifier
 from schedules.calendar_utils import get_special_day_label
 from schedules.models import ScheduleLine, WeeklySchedule
 from schedules.services import (
+    ADVANCE_REST_LIMIT_ERROR_MESSAGE,
     build_compensation_entries,
     build_expected_week_plan,
     build_line_day_breakdown,
@@ -728,6 +729,12 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             self.add_error(
                 f"day_{index}_compensation_mode",
                 "Pago en dinero por dia requiere 1 dia acumulado disponible hasta ese dia.",
+            )
+
+        for index in payment_resolution["invalid_advance_day_indices"]:
+            self.add_error(
+                f"day_{index}_compensation_mode",
+                ADVANCE_REST_LIMIT_ERROR_MESSAGE,
             )
 
         for index in payment_resolution["invalid_advance_day_with_balance_indices"]:

@@ -105,7 +105,9 @@ class DashboardViewTests(TestCase):
             employee_name="Ana",
             job_role_name="AUXILIAR",
             weekly_target_hours=Decimal("8.00"),
+            expected_weekly_hours=Decimal("12.00"),
             total_hours=Decimal("10.00"),
+            weekly_hour_difference=Decimal("-2.00"),
             warnings_count=2,
         )
         ScheduleLine.objects.create(
@@ -138,7 +140,7 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "2 horario(s) con novedades")
         self.assertContains(response, "2 persona(s) cargadas.")
         self.assertContains(response, "2 alerta(s) en 1 colaborador(es).")
-        self.assertContains(response, "Revisa horas semanales.")
+        self.assertContains(response, "Revisa horas esperadas.")
         self.assertContains(response, "Ayuda")
         self.assertContains(response, "10vJTA2WoJ0HkF5ByLp35Gw1LKR2qs8zR/preview")
 
@@ -187,6 +189,46 @@ class DashboardViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["extra_day_total"], Decimal("3.00"))
+
+    def test_dashboard_ignores_blank_draft_line_when_previous_balance_is_real(self):
+        prior_schedule = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="011", name="PRIOR"),
+            week_start_date=date(2026, 6, 28),
+            status=WeeklySchedule.Status.PUBLISHED,
+        )
+        current_schedule = WeeklySchedule.objects.create(
+            site=Site.objects.create(code="012", name="ACTUAL"),
+            week_start_date=date(2026, 7, 5),
+            status=WeeklySchedule.Status.DRAFT,
+        )
+        ScheduleLine.objects.create(
+            schedule=prior_schedule,
+            employee_identifier="2010",
+            employee_name="Empleado Con Saldo",
+            job_role_name="AUXILIAR",
+            accrued_day_balance=Decimal("2.00"),
+            accrued_hour_balance=Decimal("6.00"),
+            day_1_shift_1="08:00-16:00",
+        )
+        ScheduleLine.objects.create(
+            schedule=current_schedule,
+            employee_identifier="2010",
+            employee_name="Empleado Con Saldo",
+            job_role_name="AUXILIAR",
+            accrued_day_balance=Decimal("-3.00"),
+            accrued_hour_balance=Decimal("-44.00"),
+        )
+
+        self.client.login(username="admin_dashboard", password="secret")
+        response = self.client.get(
+            reverse("dashboard"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(response.context["extra_day_total"], Decimal("2.00"))
+        self.assertGreaterEqual(response.context["extra_hour_total"], Decimal("6.00"))
 
 
 class HolidayCalendarTests(TestCase):

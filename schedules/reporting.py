@@ -13,7 +13,11 @@ from openpyxl.utils import get_column_letter
 
 from core.access import get_accessible_schedules_queryset
 from schedules.models import ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
-from schedules.services import build_line_day_breakdown, get_schedule_line_progression_key
+from schedules.services import (
+    build_line_day_breakdown,
+    get_schedule_line_activity_indices,
+    get_schedule_line_progression_key,
+)
 
 SPANISH_MONTH_NAMES = {
     1: "Enero",
@@ -397,13 +401,16 @@ def get_latest_visible_lines_by_employee(user) -> list[ScheduleLine]:
         )
         .order_by("-week_start_date", "site__code")
     )
-    latest_by_employee: dict[str, tuple[tuple[object, ...], ScheduleLine]] = {}
+    latest_by_employee: dict[str, tuple[tuple[int, tuple[object, ...]], ScheduleLine]] = {}
     for schedule in queryset:
         for line in schedule.lines.all():
             employee_identifier = (line.employee_identifier or "").strip()
             if not employee_identifier:
                 continue
-            candidate_key = get_schedule_line_progression_key(line)
+            candidate_key = (
+                1 if schedule.status == WeeklySchedule.Status.PUBLISHED or get_schedule_line_activity_indices(line) else 0,
+                get_schedule_line_progression_key(line),
+            )
             current_entry = latest_by_employee.get(employee_identifier)
             if current_entry is None or candidate_key > current_entry[0]:
                 latest_by_employee[employee_identifier] = (candidate_key, line)

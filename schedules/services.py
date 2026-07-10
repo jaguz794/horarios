@@ -49,6 +49,11 @@ MONEY_DAY_COMPENSATION_MODES = {
 ADVANCE_DAY_COMPENSATION_MODES = {
     ScheduleLine.CompensationMode.ADVANCE_DAY,
 }
+MAX_ADVANCE_REST_PENDING_DAYS = Decimal("2.00")
+ADVANCE_REST_LIMIT_ERROR_MESSAGE = (
+    f"El trabajador ya alcanzo el limite maximo de {int(MAX_ADVANCE_REST_PENDING_DAYS)} dias adelantados "
+    "a favor de la empresa."
+)
 _INITIAL_BALANCE_REBUILD_SUPPRESSION = ContextVar("initial_balance_rebuild_suppression", default=0)
 
 REST_SHIFT_ALIASES = {
@@ -403,21 +408,26 @@ def get_weekly_rest_day_index(
     if not sunday_worked:
         return 0
 
+    candidate_indexes: list[int] = []
     for day_info in day_breakdown:
         index = int(day_info["index"])
         if index == 0:
             continue
         if decimal_hours(day_info["worked_hours"]) > Decimal("0.00"):
             continue
-        compensation_mode = str(day_info.get("compensation_mode") or "")
-        if compensation_mode in {ScheduleLine.CompensationMode.PAY_DAY, *ADVANCE_DAY_COMPENSATION_MODES}:
-            continue
         shift_categories = {
             get_shift_non_work_category(str(day_info.get("shift_1_label") or ""), shift_templates=shift_templates),
             get_shift_non_work_category(str(day_info.get("shift_2_label") or ""), shift_templates=shift_templates),
         }
-        if "rest" in shift_categories:
-            return index
+        compensation_mode = str(day_info.get("compensation_mode") or "")
+        if "rest" in shift_categories or compensation_mode in {
+            ScheduleLine.CompensationMode.PAY_DAY,
+            *ADVANCE_DAY_COMPENSATION_MODES,
+        }:
+            candidate_indexes.append(index)
+
+    if candidate_indexes:
+        return min(candidate_indexes)
 
     return 0
 
@@ -745,12 +755,16 @@ def resolve_compensation_usage(
                 day_state["valid"] = False
             day_state["source"] = "hour_balance"
         elif compensation_mode in ADVANCE_DAY_COMPENSATION_MODES:
-            advance_rest_days_used += 1
             if remaining_day_balance >= Decimal("1.00"):
                 invalid_advance_day_with_balance_indices.append(index)
                 day_state["valid"] = False
                 day_state["source"] = "use_pay_day"
+            elif remaining_advance_pending_balance + Decimal("1.00") > MAX_ADVANCE_REST_PENDING_DAYS:
+                invalid_advance_day_indices.append(index)
+                day_state["valid"] = False
+                day_state["source"] = "advance_limit"
             else:
+                advance_rest_days_used += 1
                 remaining_day_balance = (remaining_day_balance - Decimal("1.00")).quantize(TWO_DECIMALS)
                 remaining_advance_pending_balance = (
                     remaining_advance_pending_balance + Decimal("1.00")
@@ -1208,6 +1222,7 @@ def get_schedule_line_compact_alert_summary(
         or payment_resolution["invalid_pay_hours_indices"]
         or payment_resolution["invalid_pay_money_day_indices"]
         or payment_resolution["invalid_pay_money_indices"]
+        or payment_resolution["invalid_advance_day_indices"]
         or payment_resolution["invalid_advance_day_with_balance_indices"]
     ):
         categories.append("saldo previo")
@@ -1313,13 +1328,6 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     line.overtime_hours = max(line.weekly_hour_difference, Decimal("0.00")).quantize(TWO_DECIMALS)
     line.night_bonus_hours = total_night_bonus.quantize(TWO_DECIMALS)
     line.special_days_generated = special_days_generated
-    (
-        line.payment_days_used,
-        line.advance_rest_days_used,
-        line.payment_hours_used,
-        line.money_payment_days_used,
-        line.money_payment_hours_used,
-    ) = summarize_line_payments(line)
 
     manual_day_adjustment = decimal_hours(line.manual_day_adjustment)
     manual_hour_adjustment = decimal_hours(line.manual_hour_adjustment)
@@ -1336,6 +1344,11 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         day_reference_hours=day_reference_hours,
         weekly_target_hours=weekly_target,
     )
+    line.payment_days_used = int(payment_resolution["payment_days_used"])
+    line.advance_rest_days_used = int(payment_resolution["advance_rest_days_used"])
+    line.payment_hours_used = decimal_hours(payment_resolution["payment_hours_used"])
+    line.money_payment_days_used = int(payment_resolution["money_payment_days_used"])
+    line.money_payment_hours_used = decimal_hours(payment_resolution["money_payment_hours_used"])
     payment_days = Decimal(str(line.payment_days_used or 0))
     advance_rest_days = Decimal(str(line.advance_rest_days_used or 0))
     money_payment_days = Decimal(str(line.money_payment_days_used or 0))
@@ -1383,6 +1396,9 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
 
     if payment_resolution["invalid_pay_money_day_indices"]:
         warnings.append("Se intento aplicar pago en dinero por dia sin un dia acumulado disponible.")
+
+    if payment_resolution["invalid_advance_day_indices"]:
+        warnings.append(ADVANCE_REST_LIMIT_ERROR_MESSAGE)
 
     if payment_resolution["invalid_advance_day_with_balance_indices"]:
         warnings.append("Hay descansos adelantados marcados en dias donde ya existe saldo positivo; usa pago dia.")

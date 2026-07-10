@@ -154,13 +154,13 @@ class ScheduleCalculationTests(TestCase):
 
         recalculate_schedule_line(line)
 
-        self.assertEqual(line.expected_weekly_hours, Decimal("3.33"))
-        self.assertEqual(line.overtime_hours, Decimal("4.67"))
+        self.assertEqual(line.expected_weekly_hours, Decimal("4.00"))
+        self.assertEqual(line.overtime_hours, Decimal("4.00"))
         self.assertEqual(line.payment_days_used, 1)
         self.assertEqual(line.payment_hours_used, Decimal("0.00"))
         self.assertEqual(line.accrued_day_balance, Decimal("1.00"))
-        self.assertEqual(line.accrued_hour_balance, Decimal("10.17"))
-        self.assertEqual(line.accrued_total_hours_balance, Decimal("10.84"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("9.50"))
+        self.assertEqual(line.accrued_total_hours_balance, Decimal("10.17"))
 
     def test_recalculate_line_tracks_money_day_and_money_hour_payments_separately(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -670,6 +670,72 @@ class ScheduleCalculationTests(TestCase):
         self.assertEqual(form.cleaned_data["day_2_shift_1"], get_rest_shift_label())
         self.assertEqual(form.cleaned_data["day_2_shift_2"], "")
 
+    def test_form_rejects_advance_day_when_limit_is_already_reached(self):
+        prior_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 5, 31),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        ScheduleLine.objects.create(
+            schedule=prior_schedule,
+            employee_identifier="131A",
+            employee_name="Empleado Tope Adelantado",
+            daily_max_hours=Decimal("8.00"),
+            accrued_day_balance=Decimal("-2.00"),
+            advance_rest_pending_balance=Decimal("2.00"),
+            accrued_total_hours_balance=Decimal("-16.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="131A",
+            employee_name="Empleado Tope Adelantado",
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(day_2_compensation_mode=ScheduleLine.CompensationMode.ADVANCE_DAY),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("limite maximo de 2 dias adelantados", form.errors["day_2_compensation_mode"][0].lower())
+
+    def test_form_only_allows_one_more_advance_day_when_pending_balance_is_minus_one(self):
+        prior_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 5, 31),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        ScheduleLine.objects.create(
+            schedule=prior_schedule,
+            employee_identifier="131B",
+            employee_name="Empleado Adelantado Parcial",
+            daily_max_hours=Decimal("8.00"),
+            accrued_day_balance=Decimal("-1.00"),
+            advance_rest_pending_balance=Decimal("1.00"),
+            accrued_total_hours_balance=Decimal("-8.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="131B",
+            employee_name="Empleado Adelantado Parcial",
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_2_compensation_mode=ScheduleLine.CompensationMode.ADVANCE_DAY,
+                day_3_compensation_mode=ScheduleLine.CompensationMode.ADVANCE_DAY,
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertNotIn("day_2_compensation_mode", form.errors)
+        self.assertIn("limite maximo de 2 dias adelantados", form.errors["day_3_compensation_mode"][0].lower())
+
     def test_form_rejects_pay_hours_over_prior_available_balance(self):
         prior_schedule = WeeklySchedule.objects.create(
             site=self.site,
@@ -998,6 +1064,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
         employee_identifier: str,
         weekly_target_hours: Decimal,
         shift_map: dict[int, str] | None = None,
+        second_shift_map: dict[int, str] | None = None,
         compensation_map: dict[int, str] | None = None,
         daily_max_hours: Decimal = Decimal("9.00"),
     ) -> ScheduleLine:
@@ -1016,6 +1083,8 @@ class ProportionalWeeklyBalanceTests(TestCase):
         }
         for index, label in (shift_map or {}).items():
             payload[f"day_{index}_shift_1"] = label
+        for index, label in (second_shift_map or {}).items():
+            payload[f"day_{index}_shift_2"] = label
         for index, mode in (compensation_map or {}).items():
             payload[f"day_{index}_compensation_mode"] = mode
         return ScheduleLine.objects.create(**payload)
@@ -1176,6 +1245,27 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.accrued_day_balance, Decimal("-2.00"))
         self.assertEqual(line.advance_rest_pending_balance, Decimal("2.00"))
 
+    def test_advance_rest_days_never_exceed_two_pending_days(self):
+        line = self.build_line(
+            week_start=date(2026, 10, 4),
+            employee_identifier="4208A",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={4: "09:00-16:00", 5: "09:00-16:00", 6: "09:00-16:00"},
+            compensation_map={
+                1: ScheduleLine.CompensationMode.ADVANCE_DAY,
+                2: ScheduleLine.CompensationMode.ADVANCE_DAY,
+                3: ScheduleLine.CompensationMode.ADVANCE_DAY,
+            },
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_weekly_hours, Decimal("21.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("-2.00"))
+        self.assertEqual(line.advance_rest_pending_balance, Decimal("2.00"))
+        self.assertIn("limite maximo de 2 dias adelantados", line.validation_summary.lower())
+
     def test_generated_day_offsets_pending_advance_rest_first(self):
         first_line = self.build_line(
             week_start=date(2026, 10, 4),
@@ -1198,6 +1288,69 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(first_line.advance_rest_pending_balance, Decimal("2.00"))
         self.assertEqual(second_line.accrued_day_balance, Decimal("-1.00"))
         self.assertEqual(second_line.advance_rest_pending_balance, Decimal("1.00"))
+
+    def test_shifted_weekly_rest_with_sunday_work_does_not_reduce_expected_hours_twice(self):
+        line = self.build_line(
+            week_start=date(2026, 10, 18),
+            employee_identifier="4209A",
+            weekly_target_hours=Decimal("50.00"),
+            shift_map={
+                0: "07:00-12:00",
+                1: "07:00-12:00",
+                2: "07:00-12:00",
+                4: "07:00-12:00",
+                5: "07:00-12:00",
+                6: "07:00-12:00",
+            },
+            second_shift_map={
+                0: "13:00-17:00",
+                1: "13:00-17:00",
+                2: "13:00-17:00",
+                4: "13:00-17:00",
+                5: "13:00-17:00",
+                6: "13:00-17:00",
+            },
+            compensation_map={3: ScheduleLine.CompensationMode.PAY_DAY},
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_work_days, 6)
+        self.assertEqual(line.expected_weekly_hours, Decimal("50.00"))
+        self.assertEqual(line.total_hours, Decimal("54.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("4.00"))
+
+    def test_holiday_and_shifted_weekly_rest_only_reduce_expected_hours_once_each(self):
+        self.ensure_holiday(date(2026, 10, 20), "Festivo martes")
+        line = self.build_line(
+            week_start=date(2026, 10, 18),
+            employee_identifier="4209B",
+            weekly_target_hours=Decimal("50.00"),
+            shift_map={
+                0: "07:00-12:00",
+                1: "07:00-12:00",
+                2: "07:00-12:00",
+                4: "07:00-12:00",
+                5: "07:00-12:00",
+            },
+            second_shift_map={
+                0: "13:00-17:00",
+                1: "13:00-17:00",
+                2: "13:00-17:00",
+                4: "13:00-17:00",
+                5: "13:00-17:00",
+            },
+            compensation_map={3: ScheduleLine.CompensationMode.PAY_DAY},
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_work_days, 5)
+        self.assertEqual(line.expected_weekly_hours, Decimal("41.67"))
+        self.assertEqual(line.total_hours, Decimal("45.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("3.33"))
 
     def test_two_generated_days_can_leave_positive_balance_after_crossing_negative_pending(self):
         self.ensure_holiday(date(2026, 10, 21), "Festivo miercoles")

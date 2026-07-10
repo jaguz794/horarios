@@ -20,6 +20,7 @@ function initScheduleCalculations() {
   const moneyHourModes = new Set(["pay_money", "pay_money_hours"]);
   const moneyDayModes = new Set(["pay_money_day"]);
   const advanceDayModes = new Set(["advance_day"]);
+  const maxAdvancePendingDays = 2;
   const compensationModesWithHours = new Set(["pay_hours", ...moneyHourModes]);
   const restShiftLabels = new Set(["descanso"]);
   const leaveShiftLabels = new Set(["incapacidad", "traslado", "vacaciones", "renuncia", "licencia"]);
@@ -226,15 +227,16 @@ function initScheduleCalculations() {
     let advanceRestDaysUsed = 0;
     let paymentDaysFromDayBalance = 0;
     let uncoveredPaymentDays = 0;
-    let moneyPaymentDaysUsed = 0;
-    let paymentHoursUsed = 0;
-    let moneyPaymentHoursUsed = 0;
-    const invalidPayDayIndices = [];
-    const invalidPayMoneyDayIndices = [];
-    const invalidPayHoursIndices = [];
-    const invalidPayMoneyIndices = [];
-    const invalidAdvanceDayWithBalanceIndices = [];
-    const dayStates = {};
+      let moneyPaymentDaysUsed = 0;
+      let paymentHoursUsed = 0;
+      let moneyPaymentHoursUsed = 0;
+      const invalidPayDayIndices = [];
+      const invalidPayMoneyDayIndices = [];
+      const invalidPayHoursIndices = [];
+      const invalidPayMoneyIndices = [];
+      const invalidAdvanceDayLimitIndices = [];
+      const invalidAdvanceDayWithBalanceIndices = [];
+      const dayStates = {};
 
     [...entries]
       .sort((left, right) => left.index - right.index)
@@ -282,12 +284,16 @@ function initScheduleCalculations() {
             dayState.valid = false;
           }
         } else if (advanceDayModes.has(entry.mode)) {
-          advanceRestDaysUsed += 1;
           if (remainingDayBalance >= 1) {
             invalidAdvanceDayWithBalanceIndices.push(entry.index);
             dayState.source = "use_pay_day";
             dayState.valid = false;
+          } else if (remainingAdvancePendingBalance + 1 > maxAdvancePendingDays + 0.001) {
+            invalidAdvanceDayLimitIndices.push(entry.index);
+            dayState.source = "advance_limit";
+            dayState.valid = false;
           } else {
+            advanceRestDaysUsed += 1;
             remainingDayBalance = roundHours(remainingDayBalance - 1);
             remainingAdvancePendingBalance = roundHours(remainingAdvancePendingBalance + 1);
             dayState.source = "advance_rest";
@@ -348,6 +354,7 @@ function initScheduleCalculations() {
       invalidPayMoneyDayIndices,
       invalidPayHoursIndices,
       invalidPayMoneyIndices,
+      invalidAdvanceDayLimitIndices,
       invalidAdvanceDayWithBalanceIndices,
       remainingDayBalance,
       remainingHourBalance,
@@ -515,6 +522,8 @@ function initScheduleCalculations() {
         paymentInfo.hidden = false;
         if (state.paymentState?.source === "advance_rest") {
           paymentInfo.textContent = `Descanso adelantado: deja 1 dia a favor de la empresa. Pendientes por cruzar: ${formatHours(state.paymentState.remainingAdvancePendingBalance)} dia(s).`;
+        } else if (state.paymentState?.source === "advance_limit") {
+          paymentInfo.textContent = `Limite maximo: ya tiene ${maxAdvancePendingDays} dia(s) adelantado(s) a favor de la empresa.`;
         } else {
           paymentInfo.textContent = "Descanso adelantado: si ya hay dias positivos, usa pago dia.";
         }
@@ -593,6 +602,9 @@ function initScheduleCalculations() {
       if (summaryState.invalidAdvanceDayCount > 0) {
         liveMessages.push("Hay descansos adelantados en dias que ya tienen saldo positivo disponible.");
       }
+      if (summaryState.invalidAdvanceDayLimitCount > 0) {
+        liveMessages.push(`El trabajador ya alcanzo el limite maximo de ${maxAdvancePendingDays} dias adelantados a favor de la empresa.`);
+      }
       if (summaryState.invalidHourDiscountCount > 0) {
         liveMessages.push("Hay descuentos por horas que superan el saldo acumulado disponible.");
       }
@@ -639,6 +651,7 @@ function initScheduleCalculations() {
         summaryState.daysOverLimit > 0
         || summaryState.invalidPayDayCount > 0
         || summaryState.invalidAdvanceDayCount > 0
+        || summaryState.invalidAdvanceDayLimitCount > 0
         || summaryState.invalidHourDiscountCount > 0
         || summaryState.payHoursOverTargetCount > 0
         || summaryState.payMoneyOverTargetCount > 0
@@ -855,6 +868,7 @@ function initScheduleCalculations() {
         invalidPayDayCount: paymentUsage.invalidPayDayIndices.length,
         invalidPayMoneyDayCount: paymentUsage.invalidPayMoneyDayIndices.length,
         invalidAdvanceDayCount: paymentUsage.invalidAdvanceDayWithBalanceIndices.length,
+        invalidAdvanceDayLimitCount: paymentUsage.invalidAdvanceDayLimitIndices.length,
         invalidHourDiscountCount: paymentUsage.invalidPayHoursIndices.length + paymentUsage.invalidPayMoneyIndices.length,
         payHoursOverTargetCount,
         payMoneyOverTargetCount,
