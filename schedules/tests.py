@@ -265,7 +265,7 @@ class ScheduleCalculationTests(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
 
-    def test_form_allows_pay_day_without_positive_day_balance_until_negative_two_days(self):
+    def test_form_rejects_pay_day_without_positive_day_balance(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
             employee_identifier="141B",
@@ -286,16 +286,10 @@ class ScheduleCalculationTests(TestCase):
             schedule=self.schedule,
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
-        updated_line = form.save(commit=False)
-        recalculate_schedule_line(updated_line)
+        self.assertFalse(form.is_valid())
+        self.assertIn("1 dia acumulado", form.errors["day_1_compensation_mode"][0].lower())
 
-        self.assertEqual(updated_line.expected_weekly_hours, Decimal("35.00"))
-        self.assertEqual(updated_line.weekly_hour_difference, Decimal("0.00"))
-        self.assertEqual(updated_line.accrued_day_balance, Decimal("-1.00"))
-        self.assertEqual(updated_line.advance_rest_pending_balance, Decimal("1.00"))
-
-    def test_form_blocks_additional_rest_that_would_exceed_negative_day_limit(self):
+    def test_form_allows_plain_rest_day_even_with_legacy_negative_balance(self):
         EmployeeInitialBalance.objects.create(
             employee_identifier="141C",
             employee_name="Empleado Limite",
@@ -321,11 +315,9 @@ class ScheduleCalculationTests(TestCase):
             schedule=self.schedule,
         )
 
-        self.assertFalse(form.is_valid())
-        self.assertIn("day_1_shift_1", form.errors)
-        self.assertIn("limite maximo", form.errors["day_1_shift_1"][0].lower())
+        self.assertTrue(form.is_valid(), form.errors)
 
-    def test_form_accepts_pay_hours_using_same_week_overtime_generated_before(self):
+    def test_form_rejects_pay_hours_without_available_balance_from_prior_weeks(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
             employee_identifier="141A",
@@ -346,7 +338,8 @@ class ScheduleCalculationTests(TestCase):
             secondary_shift_choices=[],
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        self.assertFalse(form.is_valid())
+        self.assertIn("saldo acumulado disponible", form.errors["day_2_compensation_hours"][0].lower())
 
     def test_form_rejects_weekly_overtime_over_medical_restriction(self):
         EmployeeOvertimeRestriction.objects.create(
@@ -478,8 +471,7 @@ class ScheduleCalculationTests(TestCase):
         recalculate_schedule_line(line)
 
         compact_summary = get_schedule_line_compact_alert_summary(line)
-        self.assertIn("horas esperadas", compact_summary.lower())
-        self.assertNotIn("pendientes", compact_summary.lower())
+        self.assertEqual(compact_summary, "Sin alertas")
 
     def test_schedule_lines_are_ordered_by_role_name_then_employee(self):
         ScheduleLine.objects.create(
@@ -524,7 +516,7 @@ class ScheduleCalculationTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("jornadas continuas", form.errors["day_0_shift_2"][0].lower())
 
-    def test_form_allows_pay_day_without_prior_day_balance(self):
+    def test_form_rejects_pay_day_without_prior_day_balance(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
             employee_identifier="130",
@@ -547,9 +539,10 @@ class ScheduleCalculationTests(TestCase):
             secondary_shift_choices=[],
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        self.assertFalse(form.is_valid())
+        self.assertIn("1 dia acumulado", form.errors["day_2_compensation_mode"][0].lower())
 
-    def test_form_allows_pay_day_when_only_hour_balance_exists(self):
+    def test_form_rejects_pay_day_when_only_hour_balance_exists(self):
         prior_schedule = WeeklySchedule.objects.create(
             site=self.site,
             week_start_date=date(2026, 5, 31),
@@ -584,7 +577,8 @@ class ScheduleCalculationTests(TestCase):
             secondary_shift_choices=[],
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        self.assertFalse(form.is_valid())
+        self.assertIn("1 dia acumulado", form.errors["day_2_compensation_mode"][0].lower())
 
     def test_form_rejects_pay_day_on_sunday(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -745,7 +739,7 @@ class ScheduleCalculationTests(TestCase):
         self.assertEqual(form.cleaned_data["day_2_shift_1"], get_rest_shift_label())
         self.assertEqual(form.cleaned_data["day_2_shift_2"], "")
 
-    def test_form_rejects_advance_day_when_limit_is_already_reached(self):
+    def test_form_allows_legacy_advance_day_without_creating_negative_balance(self):
         prior_schedule = WeeklySchedule.objects.create(
             site=self.site,
             week_start_date=date(2026, 5, 31),
@@ -773,10 +767,9 @@ class ScheduleCalculationTests(TestCase):
             secondary_shift_choices=[],
         )
 
-        self.assertFalse(form.is_valid())
-        self.assertIn("limite maximo de 2 dias adelantados", form.errors["day_2_compensation_mode"][0].lower())
+        self.assertTrue(form.is_valid(), form.errors)
 
-    def test_form_only_allows_one_more_advance_day_when_pending_balance_is_minus_one(self):
+    def test_form_allows_multiple_legacy_advance_day_marks_without_balance_impact(self):
         prior_schedule = WeeklySchedule.objects.create(
             site=self.site,
             week_start_date=date(2026, 5, 31),
@@ -807,9 +800,7 @@ class ScheduleCalculationTests(TestCase):
             secondary_shift_choices=[],
         )
 
-        self.assertFalse(form.is_valid())
-        self.assertNotIn("day_2_compensation_mode", form.errors)
-        self.assertIn("limite maximo de 2 dias adelantados", form.errors["day_3_compensation_mode"][0].lower())
+        self.assertTrue(form.is_valid(), form.errors)
 
     def test_form_rejects_pay_hours_over_prior_available_balance(self):
         prior_schedule = WeeklySchedule.objects.create(
@@ -1225,7 +1216,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
         self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
 
-    def test_additional_rest_days_without_pay_day_consume_positive_day_balance(self):
+    def test_additional_rest_days_without_pay_day_do_not_touch_balances(self):
         EmployeeInitialBalance.objects.create(
             employee_identifier="4203B",
             employee_name="Empleado 4203B",
@@ -1248,14 +1239,14 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
         line.refresh_from_db()
 
-        self.assertEqual(line.expected_work_days, 4)
-        self.assertEqual(line.expected_weekly_hours, Decimal("28.00"))
+        self.assertEqual(line.expected_work_days, 6)
+        self.assertEqual(line.expected_weekly_hours, Decimal("42.00"))
         self.assertEqual(line.total_hours, Decimal("28.00"))
-        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
-        self.assertEqual(line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("-14.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("3.00"))
         self.assertEqual(line.advance_rest_pending_balance, Decimal("0.00"))
 
-    def test_additional_rest_day_without_balance_creates_negative_day_balance_without_hour_deficit(self):
+    def test_additional_rest_day_without_balance_does_not_create_negative_balances(self):
         line = self.build_line(
             week_start=date(2026, 11, 8),
             employee_identifier="4203C",
@@ -1273,14 +1264,15 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
         line.refresh_from_db()
 
-        self.assertEqual(line.expected_work_days, 5)
-        self.assertEqual(line.expected_weekly_hours, Decimal("35.00"))
+        self.assertEqual(line.expected_work_days, 6)
+        self.assertEqual(line.expected_weekly_hours, Decimal("42.00"))
         self.assertEqual(line.total_hours, Decimal("35.00"))
-        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
-        self.assertEqual(line.accrued_day_balance, Decimal("-1.00"))
-        self.assertEqual(line.advance_rest_pending_balance, Decimal("1.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("-7.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+        self.assertEqual(line.advance_rest_pending_balance, Decimal("0.00"))
 
-    def test_additional_rest_day_can_extend_negative_day_balance_to_minus_two(self):
+    def test_additional_rest_day_clamps_legacy_negative_day_balance_to_zero(self):
         EmployeeInitialBalance.objects.create(
             employee_identifier="4203D",
             employee_name="Empleado 4203D",
@@ -1303,12 +1295,12 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
         line.refresh_from_db()
 
-        self.assertEqual(line.expected_work_days, 5)
-        self.assertEqual(line.expected_weekly_hours, Decimal("35.00"))
-        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
-        self.assertEqual(line.accrued_day_balance, Decimal("-2.00"))
+        self.assertEqual(line.expected_work_days, 6)
+        self.assertEqual(line.expected_weekly_hours, Decimal("42.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("-7.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
 
-    def test_underworked_week_generates_negative_hour_balance(self):
+    def test_underworked_week_does_not_generate_negative_hour_balance(self):
         EmployeeInitialBalance.objects.create(
             employee_identifier="4204",
             employee_name="Empleado 4204",
@@ -1328,10 +1320,10 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.expected_weekly_hours, Decimal("28.00"))
         self.assertEqual(line.total_hours, Decimal("24.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("-4.00"))
-        self.assertEqual(line.accrued_hour_balance, Decimal("-4.00"))
-        self.assertIn("No cumple las horas esperadas de la semana", line.validation_summary)
+        self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+        self.assertNotIn("No cumple las horas esperadas de la semana", line.validation_summary)
 
-    def test_future_extra_hours_offset_prior_negative_hour_balance_first(self):
+    def test_future_extra_hours_accumulate_without_crossing_negative_hour_balance(self):
         first_line = self.build_line(
             week_start=date(2026, 8, 30),
             employee_identifier="4205",
@@ -1349,9 +1341,9 @@ class ProportionalWeeklyBalanceTests(TestCase):
         first_line.refresh_from_db()
         second_line.refresh_from_db()
 
-        self.assertEqual(first_line.accrued_hour_balance, Decimal("-4.00"))
+        self.assertEqual(first_line.accrued_hour_balance, Decimal("0.00"))
         self.assertEqual(second_line.weekly_hour_difference, Decimal("6.00"))
-        self.assertEqual(second_line.accrued_hour_balance, Decimal("2.00"))
+        self.assertEqual(second_line.accrued_hour_balance, Decimal("6.00"))
 
     def test_44_hour_week_uses_proportional_daily_base(self):
         line = self.build_line(
@@ -1387,7 +1379,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.total_hours, Decimal("52.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
 
-    def test_advance_rest_days_create_negative_day_balance(self):
+    def test_legacy_advance_rest_days_do_not_create_negative_day_balance(self):
         line = self.build_line(
             week_start=date(2026, 9, 27),
             employee_identifier="4208",
@@ -1400,10 +1392,10 @@ class ProportionalWeeklyBalanceTests(TestCase):
         line.refresh_from_db()
 
         self.assertEqual(line.expected_weekly_hours, Decimal("28.00"))
-        self.assertEqual(line.accrued_day_balance, Decimal("-2.00"))
-        self.assertEqual(line.advance_rest_pending_balance, Decimal("2.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(line.advance_rest_pending_balance, Decimal("0.00"))
 
-    def test_advance_rest_days_never_exceed_two_pending_days(self):
+    def test_legacy_advance_rest_days_do_not_accumulate_pending_days(self):
         line = self.build_line(
             week_start=date(2026, 10, 4),
             employee_identifier="4208A",
@@ -1420,11 +1412,11 @@ class ProportionalWeeklyBalanceTests(TestCase):
         line.refresh_from_db()
 
         self.assertEqual(line.expected_weekly_hours, Decimal("21.00"))
-        self.assertEqual(line.accrued_day_balance, Decimal("-2.00"))
-        self.assertEqual(line.advance_rest_pending_balance, Decimal("2.00"))
-        self.assertIn("limite maximo de 2 dias adelantados", line.validation_summary.lower())
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(line.advance_rest_pending_balance, Decimal("0.00"))
+        self.assertNotIn("limite maximo de 2 dias adelantados", line.validation_summary.lower())
 
-    def test_generated_day_offsets_pending_advance_rest_first(self):
+    def test_generated_day_keeps_positive_balance_when_advance_rest_is_legacy_no_op(self):
         first_line = self.build_line(
             week_start=date(2026, 10, 4),
             employee_identifier="4209",
@@ -1443,9 +1435,9 @@ class ProportionalWeeklyBalanceTests(TestCase):
         first_line.refresh_from_db()
         second_line.refresh_from_db()
 
-        self.assertEqual(first_line.advance_rest_pending_balance, Decimal("2.00"))
-        self.assertEqual(second_line.accrued_day_balance, Decimal("-1.00"))
-        self.assertEqual(second_line.advance_rest_pending_balance, Decimal("1.00"))
+        self.assertEqual(first_line.advance_rest_pending_balance, Decimal("0.00"))
+        self.assertEqual(second_line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(second_line.advance_rest_pending_balance, Decimal("0.00"))
 
     def test_shifted_weekly_rest_with_sunday_work_does_not_reduce_expected_hours_twice(self):
         line = self.build_line(
@@ -1510,7 +1502,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.total_hours, Decimal("45.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("3.33"))
 
-    def test_two_generated_days_can_leave_positive_balance_after_crossing_negative_pending(self):
+    def test_two_generated_days_leave_positive_balance_without_negative_pending(self):
         self.ensure_holiday(date(2026, 10, 21), "Festivo miercoles")
         first_line = self.build_line(
             week_start=date(2026, 10, 11),
@@ -1530,8 +1522,8 @@ class ProportionalWeeklyBalanceTests(TestCase):
         first_line.refresh_from_db()
         second_line.refresh_from_db()
 
-        self.assertEqual(first_line.accrued_day_balance, Decimal("-1.00"))
-        self.assertEqual(second_line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(first_line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(second_line.accrued_day_balance, Decimal("2.00"))
         self.assertEqual(second_line.advance_rest_pending_balance, Decimal("0.00"))
 
     def test_balances_do_not_cross_between_different_workers(self):
@@ -1576,9 +1568,9 @@ class ProportionalWeeklyBalanceTests(TestCase):
 
         self.assertEqual(first_line.accrued_day_balance, Decimal("1.00"))
         self.assertEqual(second_line.accrued_day_balance, Decimal("0.00"))
-        self.assertEqual(second_line.accrued_hour_balance, Decimal("-8.00"))
+        self.assertEqual(second_line.accrued_hour_balance, Decimal("3.00"))
 
-    def test_holiday_and_advance_rest_do_not_double_discount_expected_days(self):
+    def test_holiday_and_legacy_advance_rest_do_not_create_negative_days(self):
         self.ensure_holiday(date(2026, 11, 3), "Festivo martes")
         line = self.build_line(
             week_start=date(2026, 11, 1),
@@ -1594,8 +1586,8 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.expected_work_days, 4)
         self.assertEqual(line.expected_weekly_hours, Decimal("28.00"))
         self.assertEqual(line.total_hours, Decimal("28.00"))
-        self.assertEqual(line.accrued_day_balance, Decimal("-1.00"))
-        self.assertEqual(line.advance_rest_pending_balance, Decimal("1.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(line.advance_rest_pending_balance, Decimal("0.00"))
 
 
 class ScheduleDeleteViewTests(TestCase):
