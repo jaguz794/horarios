@@ -23,7 +23,6 @@ from schedules.services import (
     build_compensation_entries,
     build_expected_week_plan,
     build_line_day_breakdown,
-    calculate_weekly_hour_metrics,
     get_active_overtime_restriction,
     is_employee_blacklisted,
     get_daily_overtime_hours,
@@ -677,11 +676,6 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             Decimal(str(entry["worked_hours"]))
             for entry in compensation_entries
         )
-        weekly_hour_metrics = calculate_weekly_hour_metrics(
-            total_worked_hours=total_worked_hours,
-            expected_weekly_hours=Decimal(str(expected_plan["expected_weekly_hours"])),
-            weekly_target_hours=weekly_target_hours,
-        )
 
         for entry in compensation_entries:
             index = int(entry["index"])
@@ -712,10 +706,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         payment_resolution = resolve_compensation_usage(
             compensation_entries,
             available_day_balance=prior_day_balance + manual_day_adjustment,
-            available_hour_balance=max(
-                prior_hour_balance + manual_hour_adjustment + weekly_hour_metrics["hour_balance_delta"],
-                Decimal("0.00"),
-            ),
+            available_hour_balance=prior_hour_balance + manual_hour_adjustment,
             available_advance_pending_balance=max(
                 prior_advance_pending_balance - max(manual_day_adjustment, Decimal("0.00")),
                 Decimal("0.00"),
@@ -770,7 +761,8 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 ADVANCE_REST_LIMIT_ERROR_MESSAGE,
             )
 
-        weekly_overtime_hours = weekly_hour_metrics["overtime_hours"]
+        expected_weekly_hours = Decimal(str(expected_plan["expected_weekly_hours"]))
+        weekly_overtime_hours = max(total_worked_hours - expected_weekly_hours, Decimal("0.00"))
         if (
             self.overtime_restriction is not None
             and self.overtime_restriction_limit is not None

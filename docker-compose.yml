@@ -7,6 +7,6 @@ services:
     env_file:
       - .env
     ports:
-      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT:-6002}:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
