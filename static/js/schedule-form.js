@@ -20,7 +20,6 @@ function initScheduleCalculations() {
   const moneyHourModes = new Set(["pay_money", "pay_money_hours"]);
   const moneyDayModes = new Set(["pay_money_day"]);
   const advanceDayModes = new Set(["advance_day"]);
-  const maxAdvancePendingDays = 2;
   const compensationModesWithHours = new Set(["pay_hours", ...moneyHourModes]);
   const restShiftLabels = new Set(["descanso"]);
   const leaveShiftLabels = new Set(["incapacidad", "traslado", "vacaciones", "renuncia", "licencia"]);
@@ -39,12 +38,15 @@ function initScheduleCalculations() {
 
   const roundHours = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
   const roundInt = (value) => Math.round(Number(value) + Number.EPSILON);
+  const clampNonNegative = (value) => Math.max(roundHours(value), 0);
 
   const formatHours = (value, suffix = false) => {
     const rounded = roundHours(value);
     const formatted = Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, "");
     return suffix ? `${formatted} h` : formatted;
   };
+
+  const formatBalanceHours = (value, suffix = false) => formatHours(clampNonNegative(value), suffix);
 
   const toMinutes = (timeValue) => {
     const [hours, minutes] = timeValue.split(":").map((item) => Number.parseInt(item, 10));
@@ -215,57 +217,52 @@ function initScheduleCalculations() {
     entries,
     availableDayBalance,
     availableHourBalance,
-    availableAdvancePendingBalance,
-    dayReferenceHoursValue,
     weeklyTargetHoursValue,
   ) => {
-    let remainingDayBalance = roundHours(availableDayBalance);
-    let remainingHourBalance = roundHours(availableHourBalance);
-    let remainingAdvancePendingBalance = Math.max(roundHours(availableAdvancePendingBalance), 0);
+    let remainingDayBalance = clampNonNegative(availableDayBalance);
+    let remainingHourBalance = clampNonNegative(availableHourBalance);
+    let cumulativeWorkedHours = 0;
+    let cumulativeOvertimeHours = 0;
 
     let paymentDaysUsed = 0;
-    let advanceRestDaysUsed = 0;
     let paymentDaysFromDayBalance = 0;
     let uncoveredPaymentDays = 0;
-      let moneyPaymentDaysUsed = 0;
-      let paymentHoursUsed = 0;
-      let moneyPaymentHoursUsed = 0;
-      const invalidPayDayIndices = [];
-      const invalidPayMoneyDayIndices = [];
-      const invalidPayHoursIndices = [];
-      const invalidPayMoneyIndices = [];
-      const invalidAdvanceDayLimitIndices = [];
-      const invalidAdvanceDayWithBalanceIndices = [];
-      const dayStates = {};
+    let moneyPaymentDaysUsed = 0;
+    let paymentHoursUsed = 0;
+    let moneyPaymentHoursUsed = 0;
+    const invalidPayDayIndices = [];
+    const invalidPayMoneyDayIndices = [];
+    const invalidPayHoursIndices = [];
+    const invalidPayMoneyIndices = [];
+    const dayStates = {};
 
     [...entries]
       .sort((left, right) => left.index - right.index)
       .forEach((entry) => {
         const requestedHours = roundHours(entry.hours);
         const workedHours = roundHours(entry.workedHours);
-        const expectedHours = roundHours(entry.expectedHours);
         const specialGenerated = Boolean(entry.specialGenerated);
         const dayState = {
           mode: entry.mode,
           requestedHours,
           source: "",
           valid: true,
-          availableDayBalance: roundHours(Math.max(remainingDayBalance, 0)),
-          availableHourBalance: roundHours(Math.max(remainingHourBalance, 0)),
-          availableAdvancePendingBalance: roundHours(remainingAdvancePendingBalance),
+          availableDayBalance: remainingDayBalance,
+          availableHourBalance: remainingHourBalance,
+          availableAdvancePendingBalance: 0,
           remainingDayBalance,
           remainingHourBalance,
-          remainingAdvancePendingBalance,
+          remainingAdvancePendingBalance: 0,
           generatedDay: false,
           generatedHours: 0,
           hourDifference: 0,
         };
 
         if (entry.mode === "pay_day") {
-          paymentDaysUsed += 1;
           if (remainingDayBalance + 0.001 >= 1) {
-            remainingDayBalance = roundHours(remainingDayBalance - 1);
+            remainingDayBalance = clampNonNegative(remainingDayBalance - 1);
             paymentDaysFromDayBalance += 1;
+            paymentDaysUsed += 1;
             dayState.source = "day_balance";
           } else {
             uncoveredPaymentDays += 1;
@@ -274,9 +271,9 @@ function initScheduleCalculations() {
             dayState.valid = false;
           }
         } else if (moneyDayModes.has(entry.mode)) {
-          moneyPaymentDaysUsed += 1;
           if (remainingDayBalance + 0.001 >= 1) {
-            remainingDayBalance = roundHours(remainingDayBalance - 1);
+            remainingDayBalance = clampNonNegative(remainingDayBalance - 1);
+            moneyPaymentDaysUsed += 1;
             dayState.source = "day_balance";
           } else {
             invalidPayMoneyDayIndices.push(entry.index);
@@ -284,65 +281,52 @@ function initScheduleCalculations() {
             dayState.valid = false;
           }
         } else if (advanceDayModes.has(entry.mode)) {
-          if (remainingDayBalance >= 1) {
-            invalidAdvanceDayWithBalanceIndices.push(entry.index);
-            dayState.source = "use_pay_day";
-            dayState.valid = false;
-          } else if (remainingAdvancePendingBalance + 1 > maxAdvancePendingDays + 0.001) {
-            invalidAdvanceDayLimitIndices.push(entry.index);
-            dayState.source = "advance_limit";
-            dayState.valid = false;
-          } else {
-            advanceRestDaysUsed += 1;
-            remainingDayBalance = roundHours(remainingDayBalance - 1);
-            remainingAdvancePendingBalance = roundHours(remainingAdvancePendingBalance + 1);
-            dayState.source = "advance_rest";
-          }
+          dayState.source = "legacy_noop";
         } else if (entry.mode === "pay_hours") {
-          paymentHoursUsed = roundHours(paymentHoursUsed + requestedHours);
-          const remainingBefore = remainingHourBalance;
-          remainingHourBalance = roundHours(remainingHourBalance - requestedHours);
-          if (requestedHours <= 0.001 || remainingBefore + 0.001 < requestedHours) {
+          if (requestedHours <= 0.001 || remainingHourBalance + 0.001 < requestedHours) {
             invalidPayHoursIndices.push(entry.index);
             dayState.valid = false;
+            dayState.source = "insufficient";
+          } else {
+            paymentHoursUsed = roundHours(paymentHoursUsed + requestedHours);
+            remainingHourBalance = clampNonNegative(remainingHourBalance - requestedHours);
+            dayState.source = "hour_balance";
           }
-          dayState.source = "hour_balance";
         } else if (moneyHourModes.has(entry.mode)) {
-          moneyPaymentHoursUsed = roundHours(moneyPaymentHoursUsed + requestedHours);
-          const remainingBefore = remainingHourBalance;
-          remainingHourBalance = roundHours(remainingHourBalance - requestedHours);
-          if (requestedHours <= 0.001 || remainingBefore + 0.001 < requestedHours) {
-                invalidPayMoneyIndices.push(entry.index);
+          if (requestedHours <= 0.001 || remainingHourBalance + 0.001 < requestedHours) {
+            invalidPayMoneyIndices.push(entry.index);
             dayState.valid = false;
+            dayState.source = "insufficient";
+          } else {
+            moneyPaymentHoursUsed = roundHours(moneyPaymentHoursUsed + requestedHours);
+            remainingHourBalance = clampNonNegative(remainingHourBalance - requestedHours);
+            dayState.source = "hour_balance";
           }
-          dayState.source = "hour_balance";
         }
 
         if (specialGenerated && workedHours > 0.001) {
           remainingDayBalance = roundHours(remainingDayBalance + 1);
           dayState.generatedDay = true;
-          if (remainingAdvancePendingBalance > 0.001) {
-            const offsetDays = Math.min(remainingAdvancePendingBalance, 1);
-            remainingAdvancePendingBalance = roundHours(remainingAdvancePendingBalance - offsetDays);
-          }
         }
 
-        const hourDifference = roundHours(workedHours - expectedHours);
-        remainingHourBalance = roundHours(remainingHourBalance + hourDifference);
-        dayState.hourDifference = hourDifference;
-        if (hourDifference > 0.001) {
-          dayState.generatedHours = hourDifference;
+        const previousOvertimeHours = cumulativeOvertimeHours;
+        cumulativeWorkedHours = roundHours(cumulativeWorkedHours + workedHours);
+        cumulativeOvertimeHours = roundHours(Math.max(cumulativeWorkedHours - weeklyTargetHoursValue, 0));
+        const generatedHours = roundHours(Math.max(cumulativeOvertimeHours - previousOvertimeHours, 0));
+        if (generatedHours > 0.001) {
+          remainingHourBalance = roundHours(remainingHourBalance + generatedHours);
+          dayState.generatedHours = generatedHours;
         }
+        dayState.hourDifference = generatedHours;
 
         dayState.remainingDayBalance = remainingDayBalance;
         dayState.remainingHourBalance = remainingHourBalance;
-        dayState.remainingAdvancePendingBalance = remainingAdvancePendingBalance;
         dayStates[entry.index] = dayState;
       });
 
     return {
       paymentDaysUsed,
-      advanceRestDaysUsed,
+      advanceRestDaysUsed: 0,
       paymentDaysFromDayBalance,
       paymentDaysFromHourBalance: 0,
       uncoveredPaymentDays,
@@ -354,11 +338,11 @@ function initScheduleCalculations() {
       invalidPayMoneyDayIndices,
       invalidPayHoursIndices,
       invalidPayMoneyIndices,
-      invalidAdvanceDayLimitIndices,
-      invalidAdvanceDayWithBalanceIndices,
+      invalidAdvanceDayLimitIndices: [],
+      invalidAdvanceDayWithBalanceIndices: [],
       remainingDayBalance,
       remainingHourBalance,
-      remainingAdvancePendingBalance,
+      remainingAdvancePendingBalance: 0,
       dayStates,
     };
   };
@@ -456,9 +440,8 @@ function initScheduleCalculations() {
   rows.forEach((row) => {
     const weeklyTarget = parseDecimal(row.dataset.weeklyTarget);
     const dailyMax = parseDecimal(row.dataset.dailyMax);
-    const priorDayBalance = parseDecimal(row.dataset.priorDayBalance);
-    const priorHourBalance = parseDecimal(row.dataset.priorHourBalance);
-    const priorAdvancePendingBalance = parseDecimal(row.dataset.priorAdvancePendingBalance);
+    const priorDayBalance = clampNonNegative(parseDecimal(row.dataset.priorDayBalance));
+    const priorHourBalance = clampNonNegative(parseDecimal(row.dataset.priorHourBalance));
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
     const hasOvertimeRestriction = row.dataset.overtimeRestrictionActive === "true";
     const overtimeRestrictionDailyLimit = parseDecimal(row.dataset.overtimeRestrictionDailyLimit);
@@ -501,7 +484,7 @@ function initScheduleCalculations() {
       if (modeValue === "pay_day") {
         paymentInfo.hidden = false;
         if (state.paymentState?.source === "day_balance") {
-          paymentInfo.textContent = `Pago dia: usa 1 dia acumulado. Saldo estimado tras este pago: ${formatHours(state.paymentState.remainingDayBalance)} dia(s).`;
+          paymentInfo.textContent = `Pago dia: usa 1 dia acumulado. Saldo estimado tras este pago: ${formatBalanceHours(state.paymentState.remainingDayBalance)} dia(s).`;
         } else {
           paymentInfo.textContent = "Pago dia: requiere 1 dia acumulado disponible.";
         }
@@ -511,7 +494,7 @@ function initScheduleCalculations() {
       if (moneyDayModes.has(modeValue)) {
         paymentInfo.hidden = false;
         if (state.paymentState?.source === "day_balance") {
-          paymentInfo.textContent = `Pago en dinero por dia: descuenta 1 dia acumulado. Saldo estimado tras este pago: ${formatHours(state.paymentState.remainingDayBalance)} dia(s).`;
+          paymentInfo.textContent = `Pago en dinero por dia: descuenta 1 dia acumulado. Saldo estimado tras este pago: ${formatBalanceHours(state.paymentState.remainingDayBalance)} dia(s).`;
         } else {
           paymentInfo.textContent = "Pago en dinero por dia: requiere 1 dia acumulado disponible.";
         }
@@ -520,13 +503,7 @@ function initScheduleCalculations() {
 
       if (advanceDayModes.has(modeValue)) {
         paymentInfo.hidden = false;
-        if (state.paymentState?.source === "advance_rest") {
-          paymentInfo.textContent = `Descanso adelantado: deja 1 dia a favor de la empresa. Pendientes por cruzar: ${formatHours(state.paymentState.remainingAdvancePendingBalance)} dia(s).`;
-        } else if (state.paymentState?.source === "advance_limit") {
-          paymentInfo.textContent = `Limite maximo: ya tiene ${maxAdvancePendingDays} dia(s) adelantado(s) a favor de la empresa.`;
-        } else {
-          paymentInfo.textContent = "Descanso adelantado: si ya hay dias positivos, usa pago dia.";
-        }
+        paymentInfo.textContent = "Descanso adelantado: opcion legada sin impacto adicional en el saldo mostrado.";
         return;
       }
 
@@ -544,7 +521,7 @@ function initScheduleCalculations() {
 
       if (moneyHourModes.has(modeValue)) {
         paymentInfo.hidden = false;
-        paymentInfo.textContent = `Pago en dinero por horas: descuenta ${formatHours(state.compensationHoursValue)} h del saldo acumulado. Saldo estimado tras este pago: ${formatHours(state.paymentState?.remainingHourBalance ?? state.endingHourBalance)} h.`;
+        paymentInfo.textContent = `Pago en dinero por horas: descuenta ${formatHours(state.compensationHoursValue)} h del saldo acumulado. Saldo estimado tras este pago: ${formatBalanceHours(state.paymentState?.remainingHourBalance ?? state.endingHourBalance)} h.`;
         return;
       }
 
@@ -552,11 +529,11 @@ function initScheduleCalculations() {
       paymentInfo.textContent = "";
     };
 
-    const updateBalanceNote = (endingDayBalance, endingHourBalance, endingAdvancePendingBalance) => {
+    const updateBalanceNote = (endingDayBalance, endingHourBalance) => {
       if (!balanceNote) {
         return;
       }
-      balanceNote.textContent = `Saldo previo: ${formatHours(priorDayBalance)} dia(s), ${formatHours(priorHourBalance)} h y ${formatHours(priorAdvancePendingBalance)} descanso(s) adelantado(s). Resultado estimado: ${formatHours(endingDayBalance)} dia(s), ${formatHours(endingHourBalance)} h y ${formatHours(endingAdvancePendingBalance)} descanso(s) adelantado(s).`;
+      balanceNote.textContent = `Saldo previo: ${formatBalanceHours(priorDayBalance)} dia(s) y ${formatBalanceHours(priorHourBalance)} h. Resultado estimado: ${formatBalanceHours(endingDayBalance)} dia(s) y ${formatBalanceHours(endingHourBalance)} h.`;
     };
 
     const buildLiveSummary = (summaryState) => {
@@ -566,7 +543,7 @@ function initScheduleCalculations() {
         `Horas esperadas: ${formatHours(summaryState.expectedWeeklyHours, true)}. Programadas: ${formatHours(summaryState.totalHours, true)}. Diferencia: ${formatHours(summaryState.weeklyHourDifference, true)}.`,
       );
       liveMessages.push(
-        `Saldo actual estimado: ${formatHours(summaryState.endingDayBalance)} dia(s) y ${formatHours(summaryState.endingHourBalance)} h.`,
+        `Saldo actual estimado: ${formatBalanceHours(summaryState.endingDayBalance)} dia(s) y ${formatBalanceHours(summaryState.endingHourBalance)} h.`,
       );
       if (summaryState.specialDaysGenerated > 0.001) {
         liveMessages.push(`Genera ${formatHours(summaryState.specialDaysGenerated)} dia(s) por domingos/festivos.`);
@@ -599,12 +576,6 @@ function initScheduleCalculations() {
       if (summaryState.invalidPayMoneyDayCount > 0) {
         liveMessages.push("Hay pagos en dinero por dia sin un dia acumulado disponible.");
       }
-      if (summaryState.invalidAdvanceDayCount > 0) {
-        liveMessages.push("Hay descansos adelantados en dias que ya tienen saldo positivo disponible.");
-      }
-      if (summaryState.invalidAdvanceDayLimitCount > 0) {
-        liveMessages.push(`El trabajador ya alcanzo el limite maximo de ${maxAdvancePendingDays} dias adelantados a favor de la empresa.`);
-      }
       if (summaryState.invalidHourDiscountCount > 0) {
         liveMessages.push("Hay descuentos por horas que superan el saldo acumulado disponible.");
       }
@@ -622,12 +593,6 @@ function initScheduleCalculations() {
       }
       if (summaryState.manualDayAdjustment !== 0 || summaryState.manualHourAdjustment !== 0) {
         liveMessages.push(`Ajuste manual aplicado: ${formatHours(summaryState.manualDayAdjustment)} dia(s) y ${formatHours(summaryState.manualHourAdjustment)} h.`);
-      }
-      if (summaryState.endingAdvancePendingBalance > 0.001) {
-        liveMessages.push(`Descansos adelantados pendientes por cruzar: ${formatHours(summaryState.endingAdvancePendingBalance)} dia(s).`);
-      }
-      if (summaryState.endingDayBalance < -0.001 || summaryState.endingHourBalance < -0.001) {
-        liveMessages.push("Parte del saldo queda a favor de la empresa.");
       }
 
       if (showDetailedAlerts) {
@@ -650,20 +615,12 @@ function initScheduleCalculations() {
       if (
         summaryState.daysOverLimit > 0
         || summaryState.invalidPayDayCount > 0
-        || summaryState.invalidAdvanceDayCount > 0
-        || summaryState.invalidAdvanceDayLimitCount > 0
         || summaryState.invalidHourDiscountCount > 0
         || summaryState.payHoursOverTargetCount > 0
         || summaryState.payMoneyOverTargetCount > 0
         || summaryState.invalidPositiveHoursCount > 0
       ) {
         conciseMessages.push("Revisa limites o saldo.");
-      }
-      if (summaryState.endingAdvancePendingBalance > 0.001) {
-        conciseMessages.push(`Descansos adelantados: ${formatHours(summaryState.endingAdvancePendingBalance)}.`);
-      }
-      if (summaryState.endingDayBalance < -0.001 || summaryState.endingHourBalance < -0.001) {
-        conciseMessages.push("Saldo a favor de la empresa.");
       }
       return conciseMessages;
     };
@@ -787,7 +744,7 @@ function initScheduleCalculations() {
       const manualDayAdjustment = roundHours(parseDecimal(manualDayAdjustmentInput?.value));
       const manualHourAdjustment = roundHours(parseDecimal(manualHourAdjustmentInput?.value));
       const weeklyHourDifference = roundHours(totalHours - expectedPlan.expectedWeeklyHours);
-      const overtimeHours = roundHours(Math.max(weeklyHourDifference, 0));
+      const overtimeHours = roundHours(Math.max(totalHours - effectiveWeeklyTarget, 0));
       const overtimeWeeklyRestrictionExceeded =
         hasOvertimeRestriction && overtimeHours > overtimeRestrictionWeeklyLimit + 0.001;
       const paymentUsage = resolvePaymentUsage(
@@ -801,27 +758,22 @@ function initScheduleCalculations() {
         })),
         priorDayBalance + manualDayAdjustment,
         priorHourBalance + manualHourAdjustment,
-        Math.max(priorAdvancePendingBalance - Math.max(manualDayAdjustment, 0), 0),
-        dayReferenceHours,
-        expectedPlan.expectedWeeklyHours,
+        effectiveWeeklyTarget,
       );
-      const endingDayBalance = roundHours(
+      const endingDayBalance = clampNonNegative(
         priorDayBalance
         + specialDaysGenerated
         + manualDayAdjustment
         - paymentUsage.paymentDaysUsed
         - paymentUsage.moneyPaymentDaysUsed
-        - paymentUsage.advanceRestDaysUsed
       );
-      const endingHourBalance = roundHours(
+      const endingHourBalance = clampNonNegative(
         priorHourBalance
-        + weeklyHourDifference
+        + overtimeHours
         + manualHourAdjustment
         - paymentUsage.paymentHoursUsed
         - paymentUsage.moneyPaymentHoursUsed,
       );
-      const endingAdvancePendingBalance = roundHours(paymentUsage.remainingAdvancePendingBalance);
-
       dayStates.forEach((dayState) => {
         updatePaymentInfo(dayState.dayCell, dayState.modeValue, {
           dailyHours: dayState.dailyHours,
@@ -843,15 +795,15 @@ function initScheduleCalculations() {
         nightCell.textContent = formatHours(totalNightHours);
       }
       if (dayBalanceCell) {
-        dayBalanceCell.textContent = formatHours(endingDayBalance);
-        dayBalanceCell.classList.toggle("metric-cell--negative", endingDayBalance < -0.001);
+        dayBalanceCell.textContent = formatBalanceHours(endingDayBalance);
+        dayBalanceCell.classList.remove("metric-cell--negative");
       }
       if (hourBalanceCell) {
-        hourBalanceCell.textContent = formatHours(endingHourBalance);
-        hourBalanceCell.classList.toggle("metric-cell--negative", endingHourBalance < -0.001);
+        hourBalanceCell.textContent = formatBalanceHours(endingHourBalance);
+        hourBalanceCell.classList.remove("metric-cell--negative");
       }
 
-      updateBalanceNote(endingDayBalance, endingHourBalance, endingAdvancePendingBalance);
+      updateBalanceNote(endingDayBalance, endingHourBalance);
 
       const liveMessages = buildLiveSummary({
         totalHours,
@@ -867,8 +819,6 @@ function initScheduleCalculations() {
         specialDaysGenerated,
         invalidPayDayCount: paymentUsage.invalidPayDayIndices.length,
         invalidPayMoneyDayCount: paymentUsage.invalidPayMoneyDayIndices.length,
-        invalidAdvanceDayCount: paymentUsage.invalidAdvanceDayWithBalanceIndices.length,
-        invalidAdvanceDayLimitCount: paymentUsage.invalidAdvanceDayLimitIndices.length,
         invalidHourDiscountCount: paymentUsage.invalidPayHoursIndices.length + paymentUsage.invalidPayMoneyIndices.length,
         payHoursOverTargetCount,
         payMoneyOverTargetCount,
@@ -878,7 +828,6 @@ function initScheduleCalculations() {
         manualHourAdjustment,
         endingDayBalance,
         endingHourBalance,
-        endingAdvancePendingBalance,
       });
 
       if (summaryCell) {

@@ -51,7 +51,7 @@
   </article>
   <article class="stat-card stat-card--tooltip">
     <span class="stat-card-label">Dias extras acumulados</span>
-    <strong>{{ extra_day_total|hours_int }}</strong>
+    <strong>{{ extra_day_total|non_negative_hours_int }}</strong>
     <div class="stat-tooltip">
       <strong>Acumulado por cargo</strong>
       {% if extra_day_role_items %}
@@ -59,7 +59,7 @@
         {% for role_name, total_value in extra_day_role_items %}
         <li>
           <span>{{ role_name }}</span>
-          <small>{{ total_value|hours_int }} dia(s).</small>
+          <small>{{ total_value|non_negative_hours_int }} dia(s).</small>
         </li>
         {% endfor %}
       </ul>
@@ -70,7 +70,7 @@
   </article>
   <article class="stat-card stat-card--tooltip">
     <span class="stat-card-label">Horas extras acumuladas</span>
-    <strong>{{ extra_hour_total|hours_int }}</strong>
+    <strong>{{ extra_hour_total|non_negative_hours_int }}</strong>
     <div class="stat-tooltip">
       <strong>Acumulado por cargo</strong>
       {% if extra_hour_role_items %}
@@ -78,7 +78,7 @@
         {% for role_name, total_value in extra_hour_role_items %}
         <li>
           <span>{{ role_name }}</span>
-          <small>{{ total_value|hours_int }} h.</small>
+          <small>{{ total_value|non_negative_hours_int }} h.</small>
         </li>
         {% endfor %}
       </ul>

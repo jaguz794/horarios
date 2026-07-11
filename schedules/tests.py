@@ -34,7 +34,7 @@ from schedules.services import (
     rebuild_balances_for_employees_from_week,
     sync_schedule_from_legacy,
 )
-from schedules.templatetags.schedule_tags import hours_int
+from schedules.templatetags.schedule_tags import hours_int, non_negative_hours_int
 
 User = get_user_model()
 
@@ -43,6 +43,10 @@ class ScheduleTemplateFilterTests(SimpleTestCase):
     def test_hours_int_preserves_half_hours(self):
         self.assertEqual(hours_int(Decimal("1.50")), "1.5")
         self.assertEqual(hours_int(Decimal("8.00")), "8")
+
+    def test_non_negative_hours_int_hides_legacy_negative_values(self):
+        self.assertEqual(non_negative_hours_int(Decimal("-3.50")), "0")
+        self.assertEqual(non_negative_hours_int(Decimal("2.00")), "2")
 
     def test_data_upload_max_number_fields_is_large_enough(self):
         self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_NUMBER_FIELDS, 12000)
@@ -2053,7 +2057,7 @@ class ScheduleDeleteViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Revisa horas esperadas, saldo a favor empresa.")
+        self.assertContains(response, "Sin alertas")
         self.assertNotContains(response, "No cumple las horas esperadas de la semana")
 
     def test_admin_sees_detailed_alert_summary(self):
@@ -2070,7 +2074,7 @@ class ScheduleDeleteViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "No cumple las horas esperadas de la semana")
+        self.assertContains(response, "Sin alertas")
 
     def test_published_schedule_hides_save_button_and_shows_closed_notice(self):
         self.schedule.status = WeeklySchedule.Status.PUBLISHED
@@ -2310,9 +2314,9 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(self.schedule.notes, "Horario republicado")
         self.assertFalse(self.schedule.admin_edit_enabled)
         self.assertTrue(self.schedule.is_closed)
-        self.assertEqual(self.line.expected_weekly_hours, Decimal("28.00"))
-        self.assertEqual(self.line.weekly_hour_difference, Decimal("0.00"))
-        self.assertEqual(self.line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(self.line.expected_weekly_hours, Decimal("35.00"))
+        self.assertEqual(self.line.weekly_hour_difference, Decimal("-7.00"))
+        self.assertEqual(self.line.accrued_day_balance, Decimal("1.00"))
 
     def test_admin_can_unlock_published_schedule_and_remove_line(self):
         self.schedule.status = WeeklySchedule.Status.PUBLISHED

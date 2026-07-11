@@ -425,8 +425,8 @@ def build_balance_role_breakdown(lines: list[ScheduleLine]) -> dict[str, object]
 
     for line in lines:
         role_name = (line.job_role_name or "Sin cargo").strip() or "Sin cargo"
-        day_value = Decimal(str(line.accrued_day_balance or "0"))
-        hour_value = Decimal(str(line.accrued_hour_balance or "0"))
+        day_value = max(Decimal(str(line.accrued_day_balance or "0")), Decimal("0.00"))
+        hour_value = max(Decimal(str(line.accrued_hour_balance or "0")), Decimal("0.00"))
         days_by_role[role_name] += day_value
         hours_by_role[role_name] += hour_value
         total_days += day_value

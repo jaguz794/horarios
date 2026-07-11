@@ -150,7 +150,7 @@
             <th>
               <span
                 class="help-label"
-                title="Ajuste manual firmado. Usa valores positivos para sumar saldo al trabajador y negativos para descontarlo a favor de la empresa."
+                title="Ajuste manual firmado. Usa valores positivos para sumar saldo al trabajador y negativos para descontar del saldo acumulado."
               >
                 Ajuste dias
               </span>
@@ -176,9 +176,8 @@
             data-role-name="{{ line_form.instance.job_role_name|default:'' }}"
             data-weekly-target="{{ line_form.instance.weekly_target_hours }}"
             data-daily-max="{{ line_form.instance.daily_max_hours }}"
-            data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance }}"
-            data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance }}"
-            data-prior-advance-pending-balance="{{ line_form.balance_snapshot.prior_advance_pending_balance }}"
+            data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance|non_negative_hours_int }}"
+            data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance|non_negative_hours_int }}"
             data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
             data-overtime-restriction-active="{% if line_form.overtime_restriction %}true{% else %}false{% endif %}"
             data-overtime-restriction-daily-limit="{{ line_form.overtime_restriction_daily_limit|default:'' }}"
@@ -248,8 +247,8 @@
             {% if show_night_hours %}
             <td class="metric-cell" data-night-hours>{{ line_form.instance.night_bonus_hours|hours_int }}</td>
             {% endif %}
-            <td class="metric-cell" data-day-balance>{{ line_form.instance.accrued_day_balance|hours_int }}</td>
-            <td class="metric-cell" data-hour-balance>{{ line_form.instance.accrued_hour_balance|hours_int }}</td>
+            <td class="metric-cell" data-day-balance>{{ line_form.instance.accrued_day_balance|non_negative_hours_int }}</td>
+            <td class="metric-cell" data-hour-balance>{{ line_form.instance.accrued_hour_balance|non_negative_hours_int }}</td>
             {% if show_admin_balance_controls %}
             <td>
               <div class="pending-cell pending-cell--compact pending-cell--days">
@@ -268,13 +267,12 @@
               <small
                 class="balance-note"
                 data-balance-note
-                data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance }}"
-                data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance }}"
-                data-prior-advance-pending-balance="{{ line_form.balance_snapshot.prior_advance_pending_balance }}"
+                data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance|non_negative_hours_int }}"
+                data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance|non_negative_hours_int }}"
                 data-prior-day-hours="{{ line_form.balance_snapshot.prior_day_equivalent_hours }}"
                 data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
               >
-                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s), {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h y {{ line_form.balance_snapshot.prior_advance_pending_balance|hours_int }} descanso(s) adelantado(s).
+                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|non_negative_hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|non_negative_hours_int }} h.
               </small>
               <small class="live-summary" data-live-summary></small>
               {% if line_form.non_field_errors %}

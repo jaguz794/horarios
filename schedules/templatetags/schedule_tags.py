@@ -24,3 +24,15 @@ def hours_int(value):
         return rendered or "0"
     except (InvalidOperation, TypeError, ValueError):
         return value
+
+
+@register.filter
+def non_negative_hours_int(value):
+    try:
+        decimal_value = max(Decimal(str(value)), Decimal("0.00")).normalize()
+        rendered = format(decimal_value, "f")
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        return rendered or "0"
+    except (InvalidOperation, TypeError, ValueError):
+        return value
