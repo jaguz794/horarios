@@ -485,6 +485,9 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         cleaned_data = super().clean()
         config = SystemConfiguration.load()
         day_reference_hours = self.balance_snapshot["day_reference_hours"]
+        daily_target_hours = Decimal(
+            str(self.instance.daily_max_hours or config.default_daily_max_hours or day_reference_hours or "0")
+        )
         rest_shift_label = get_rest_shift_label()
         shift_labels = {
             cleaned_data.get(field_name)
@@ -576,7 +579,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                     ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
                     ScheduleLine.CompensationMode.PAY_MONEY,
                 }
-                and compensation_hours > day_reference_hours
+                and compensation_hours > daily_target_hours
             ):
                 self.add_error(
                     compensation_hours_field,
@@ -687,15 +690,15 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                         compensation_hours_field,
                         "Ese dia no requiere pago por horas porque no es una jornada laborable esperada.",
                     )
-                elif worked_hours >= expected_hours:
+                elif worked_hours >= daily_target_hours:
                     self.add_error(
                         compensation_hours_field,
-                        "Ese dia ya cumple la jornada esperada y no requiere pago por horas.",
+                        "Ese dia ya cumple la jornada del dia y no requiere pago por horas.",
                     )
-                elif compensated_day_hours > expected_hours:
+                elif compensated_day_hours > daily_target_hours:
                     self.add_error(
                         compensation_hours_field,
-                        "El pago por horas supera las horas necesarias para completar la jornada esperada del dia.",
+                        "El pago por horas supera las horas necesarias para completar la jornada del dia.",
                     )
 
         payment_resolution = resolve_compensation_usage(

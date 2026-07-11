@@ -1315,9 +1315,9 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
             compensated_day_hours = daily_hours + compensation_hours
             if compensation_hours <= Decimal("0.00"):
                 warnings.append(f"Dia {index + 1}: pago horas requiere una cantidad mayor que cero.")
-            elif daily_hours >= day_reference_hours:
-                warnings.append(f"Dia {index + 1}: la jornada ya esta completa y no requiere pago horas.")
-            elif compensated_day_hours > day_reference_hours:
+            elif daily_hours >= daily_limit:
+                warnings.append(f"Dia {index + 1}: la jornada del dia ya esta completa y no requiere pago horas.")
+            elif compensated_day_hours > daily_limit:
                 warnings.append(f"Dia {index + 1}: pago horas supera la jornada del dia.")
         elif compensation_mode == ScheduleLine.CompensationMode.PAY_DAY and is_special_day:
             warnings.append(f"Dia {index + 1}: no se pueden pagar dias acumulados en domingo o festivo.")

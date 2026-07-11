@@ -510,11 +510,11 @@ function initScheduleCalculations() {
       if (modeValue === "pay_hours") {
         paymentInfo.hidden = false;
         const coveredHours = state.dailyHours + state.compensationHoursValue;
-        const expectedHours = state.expectedHours || 0;
-        if (coveredHours >= expectedHours - 0.001) {
+        const targetDailyHours = state.targetDailyHours || 0;
+        if (coveredHours >= targetDailyHours - 0.001) {
           paymentInfo.textContent = `Trabajadas ${formatHours(state.dailyHours)} h + pagas ${formatHours(state.compensationHoursValue)} h = jornada cubierta.`;
         } else {
-          paymentInfo.textContent = `Trabajadas ${formatHours(state.dailyHours)} h + pagas ${formatHours(state.compensationHoursValue)} h. Faltan ${formatHours(expectedHours - coveredHours)} h.`;
+          paymentInfo.textContent = `Trabajadas ${formatHours(state.dailyHours)} h + pagas ${formatHours(state.compensationHoursValue)} h. Faltan ${formatHours(targetDailyHours - coveredHours)} h.`;
         }
         return;
       }
@@ -538,21 +538,11 @@ function initScheduleCalculations() {
 
     const buildLiveSummary = (summaryState) => {
       const liveMessages = [];
-
-      liveMessages.push(
-        `Horas esperadas: ${formatHours(summaryState.expectedWeeklyHours, true)}. Programadas: ${formatHours(summaryState.totalHours, true)}. Diferencia: ${formatHours(summaryState.weeklyHourDifference, true)}.`,
-      );
-      liveMessages.push(
-        `Saldo actual estimado: ${formatBalanceHours(summaryState.endingDayBalance)} dia(s) y ${formatBalanceHours(summaryState.endingHourBalance)} h.`,
-      );
       if (summaryState.specialDaysGenerated > 0.001) {
         liveMessages.push(`Genera ${formatHours(summaryState.specialDaysGenerated)} dia(s) por domingos/festivos.`);
       }
       if (summaryState.overtimeHours > 0.001) {
         liveMessages.push(`Extras calculadas: ${formatHours(summaryState.overtimeHours, true)}.`);
-      }
-      if (summaryState.weeklyHourDifference < -0.001) {
-        liveMessages.push(`Incumplimiento semanal: faltan ${formatHours(Math.abs(summaryState.weeklyHourDifference), true)}.`);
       }
       if (summaryState.overtimeDailyRestrictionExceededCount > 0) {
         liveMessages.push(
@@ -600,9 +590,6 @@ function initScheduleCalculations() {
       }
 
       const conciseMessages = [];
-      conciseMessages.push(
-        `Esperadas ${formatHours(summaryState.expectedWeeklyHours, true)} / programadas ${formatHours(summaryState.totalHours, true)} / diferencia ${formatHours(summaryState.weeklyHourDifference, true)}.`,
-      );
       if (summaryState.specialDaysGenerated > 0.001) {
         conciseMessages.push(`Dia(s) generado(s): ${formatHours(summaryState.specialDaysGenerated)}.`);
       }
@@ -680,7 +667,7 @@ function initScheduleCalculations() {
         if (moneyHourModes.has(modeValue)) {
           if (compensationHoursValue <= 0.001) {
             invalidPositiveHoursCount += 1;
-          } else if (compensationHoursValue > dayReferenceHours + 0.001) {
+          } else if (compensationHoursValue > effectiveDailyMax + 0.001) {
             payMoneyOverTargetCount += 1;
           }
         }
@@ -733,9 +720,9 @@ function initScheduleCalculations() {
             invalidPositiveHoursCount += 1;
           } else if (dayState.expectedHours <= 0.001) {
             payHoursOverTargetCount += 1;
-          } else if (dayState.dailyHours + dayState.compensationHoursValue > dayState.expectedHours + 0.001) {
+          } else if (dayState.dailyHours + dayState.compensationHoursValue > effectiveDailyMax + 0.001) {
             payHoursOverTargetCount += 1;
-          } else if (dayState.dailyHours + dayState.compensationHoursValue < dayState.expectedHours - 0.001) {
+          } else if (dayState.dailyHours + dayState.compensationHoursValue < effectiveDailyMax - 0.001) {
             payHoursIncompleteCount += 1;
           }
         }
@@ -779,6 +766,7 @@ function initScheduleCalculations() {
           dailyHours: dayState.dailyHours,
           compensationHoursValue: dayState.compensationHoursValue,
           expectedHours: dayState.expectedHours,
+          targetDailyHours: effectiveDailyMax,
           endingDayBalance,
           endingHourBalance,
           paymentState: paymentUsage.dayStates[dayState.dayIndex],

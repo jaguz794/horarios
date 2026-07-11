@@ -872,6 +872,41 @@ class ScheduleCalculationTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("completar la jornada", form.errors["day_1_compensation_hours"][0].lower())
 
+    def test_form_allows_pay_hours_until_daily_max_not_weekly_prorated_average(self):
+        prior_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 5, 31),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        ScheduleLine.objects.create(
+            schedule=prior_schedule,
+            employee_identifier="134B",
+            employee_name="Empleado Demo 9B",
+            weekly_target_hours=Decimal("44.00"),
+            daily_max_hours=Decimal("8.00"),
+            accrued_hour_balance=Decimal("2.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="134B",
+            employee_name="Empleado Demo 9B",
+            weekly_target_hours=Decimal("44.00"),
+            daily_max_hours=Decimal("8.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_1_shift_1="18:00-00:00",
+                day_1_compensation_mode=ScheduleLine.CompensationMode.PAY_HOURS,
+                day_1_compensation_hours="2",
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
     def test_form_rejects_second_shift_when_first_shift_already_meets_daily_journey(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,
