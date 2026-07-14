@@ -10,6 +10,7 @@ import re
 import unicodedata
 
 from core.models import JobRole, OperationalStaffCache, ShiftTemplate, Site, SystemConfiguration
+from django.db import transaction
 from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db.utils import OperationalError, ProgrammingError
@@ -1006,6 +1007,77 @@ def load_initial_balance_rows(uploaded_file) -> tuple[tuple[object, ...], list[t
     return header_row, data_rows
 
 
+def build_schedule_flat_file_headers(schedule: WeeklySchedule) -> list[str]:
+    headers = ["Cedula", "Empleado", "Cargo"]
+    for column in schedule.get_day_columns():
+        day_label = str(column["label"])
+        headers.extend(
+            [
+                f"{day_label} turno 1",
+                f"{day_label} turno 2",
+                f"{day_label} modo pago",
+                f"{day_label} horas pago",
+                f"{day_label} inventario",
+            ]
+        )
+    headers.extend(["Ajuste dias", "Ajuste horas"])
+    return headers
+
+
+def load_schedule_flat_file_rows(uploaded_file) -> tuple[tuple[object, ...], list[tuple[object, ...]]]:
+    file_name = (getattr(uploaded_file, "name", "") or "").strip().lower()
+    if file_name.endswith(".csv"):
+        csv_text = decode_uploaded_csv(uploaded_file)
+        sample = csv_text[:2048]
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;|\t")
+        except csv.Error:
+            dialect = csv.excel
+
+        reader = csv.reader(StringIO(csv_text), dialect)
+        rows = [
+            tuple(row)
+            for row in reader
+            if any(str(cell or "").strip() for cell in row)
+        ]
+        if not rows:
+            raise ValueError("El archivo no contiene encabezados.")
+        return tuple(rows[0]), rows[1:]
+
+    workbook = load_workbook(uploaded_file, data_only=True)
+    worksheet = workbook.active
+    header_row = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    data_rows = list(worksheet.iter_rows(min_row=2, values_only=True))
+    return header_row, data_rows
+
+
+def parse_schedule_flat_decimal(value: object, label: str, row_number: int) -> Decimal:
+    if value in (None, ""):
+        return Decimal("0.00")
+    try:
+        return Decimal(str(value).strip().replace(",", ".")).quantize(TWO_DECIMALS)
+    except (InvalidOperation, AttributeError, ValueError):
+        raise ValueError(f"Fila {row_number}: el valor de {label} no es numerico.")
+
+
+def parse_schedule_flat_boolean(value: object) -> bool:
+    normalized = normalize_initial_balance_header(value)
+    return normalized in {"1", "si", "sí", "s", "true", "verdadero", "x", "yes"}
+
+
+def stringify_upload_identifier(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    raw_value = str(value).strip()
+    if raw_value.endswith(".0") and raw_value.replace(".", "", 1).isdigit():
+        return raw_value[:-2]
+    return raw_value
+
+
 def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[str, object]:
     header_row, data_rows = load_initial_balance_rows(uploaded_file)
     if not header_row:
@@ -1163,6 +1235,230 @@ def import_employee_initial_balances(uploaded_file, *, updated_by=None) -> dict[
         "created_count": created_count,
         "updated_count": updated_count,
         "processed_count": created_count + updated_count,
+        "touched_identifiers": touched_identifiers,
+    }
+
+
+def normalize_schedule_upload_compensation_mode(value: object) -> str:
+    normalized = normalize_initial_balance_header(value)
+    if not normalized:
+        return ""
+
+    aliases = {
+        "sin_pago": "",
+        "sinpago": "",
+        "ninguno": "",
+        "pay_day": ScheduleLine.CompensationMode.PAY_DAY,
+        "pago_dia": ScheduleLine.CompensationMode.PAY_DAY,
+        "pagodia": ScheduleLine.CompensationMode.PAY_DAY,
+        "pay_hours": ScheduleLine.CompensationMode.PAY_HOURS,
+        "pago_horas": ScheduleLine.CompensationMode.PAY_HOURS,
+        "pagohoras": ScheduleLine.CompensationMode.PAY_HOURS,
+        "advance_day": ScheduleLine.CompensationMode.ADVANCE_DAY,
+        "descanso_adelantado": ScheduleLine.CompensationMode.ADVANCE_DAY,
+        "pago_dinero_dia": ScheduleLine.CompensationMode.PAY_MONEY_DAY,
+        "pagodinero_dia": ScheduleLine.CompensationMode.PAY_MONEY_DAY,
+        "pago_en_dinero_por_dia": ScheduleLine.CompensationMode.PAY_MONEY_DAY,
+        "pay_money_day": ScheduleLine.CompensationMode.PAY_MONEY_DAY,
+        "pago_dinero_horas": ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+        "pagodinero_horas": ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+        "pago_en_dinero_por_horas": ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+        "pay_money_hours": ScheduleLine.CompensationMode.PAY_MONEY_HOURS,
+        "pay_money": ScheduleLine.CompensationMode.PAY_MONEY,
+        "pago_dinero": ScheduleLine.CompensationMode.PAY_MONEY,
+        "pagodinero": ScheduleLine.CompensationMode.PAY_MONEY,
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+
+    for code, label in ScheduleLine.CompensationMode.choices:
+        if normalized in {normalize_initial_balance_header(code), normalize_initial_balance_header(label)}:
+            return code
+
+    raise ValueError(f"Modo de pago no reconocido: {value}.")
+
+
+def import_schedule_flat_file(
+    schedule: WeeklySchedule,
+    uploaded_file,
+    *,
+    updated_by=None,
+    allow_money_payment: bool = False,
+) -> dict[str, object]:
+    from schedules.forms import ScheduleLineForm, build_shift_choices
+
+    header_row, data_rows = load_schedule_flat_file_rows(uploaded_file)
+    if not header_row:
+        raise ValueError("El archivo no contiene encabezados.")
+
+    expected_headers = build_schedule_flat_file_headers(schedule)
+    header_index = {
+        normalize_initial_balance_header(header): index
+        for index, header in enumerate(header_row)
+        if str(header or "").strip()
+    }
+    missing_headers = [
+        header
+        for header in expected_headers
+        if normalize_initial_balance_header(header) not in header_index
+    ]
+    if missing_headers:
+        raise ValueError(
+            "Faltan columnas obligatorias en la plantilla del horario: "
+            + ", ".join(missing_headers[:6])
+            + ("." if len(missing_headers) <= 6 else ", ...")
+        )
+
+    day_columns = schedule.get_day_columns()
+    line_by_identifier = {
+        (line.employee_identifier or "").strip(): line
+        for line in schedule.lines.all().order_by("job_role_name", "employee_name", "employee_identifier")
+    }
+    role_by_name = {
+        normalize_initial_balance_header(role.name): role
+        for role in JobRole.objects.filter(is_active=True)
+    }
+    shift_choices = build_shift_choices(second_slot=False)
+    secondary_shift_choices = build_shift_choices(second_slot=True)
+
+    prepared_lines: list[ScheduleLine] = []
+    touched_identifiers: list[str] = []
+    seen_identifiers: set[str] = set()
+    errors: list[str] = []
+
+    def get_row_value(row: tuple[object, ...], header: str) -> object:
+        return row[header_index[normalize_initial_balance_header(header)]]
+
+    def serialize_decimal(value: Decimal) -> str:
+        return "" if value == Decimal("0.00") else format(value.normalize(), "f")
+
+    for row_number, row in enumerate(data_rows, start=2):
+        if not any(str(cell or "").strip() for cell in row):
+            continue
+
+        identifier = stringify_upload_identifier(get_row_value(row, "Cedula"))
+        if not identifier:
+            errors.append(f"Fila {row_number}: debes indicar la cedula.")
+            continue
+        if identifier in seen_identifiers:
+            errors.append(f"Fila {row_number}: la cedula {identifier} esta repetida en el archivo.")
+            continue
+        seen_identifiers.add(identifier)
+
+        line = line_by_identifier.get(identifier)
+        if line is None:
+            errors.append(
+                f"Fila {row_number}: la cedula {identifier} no existe en el horario. "
+                "Primero cargala en la semana y luego vuelve a importar."
+            )
+            continue
+
+        role_name = str(get_row_value(row, "Cargo") or "").strip()
+        if role_name:
+            matched_role = role_by_name.get(normalize_initial_balance_header(role_name))
+            if matched_role is None:
+                errors.append(f"Fila {row_number}: el cargo '{role_name}' no existe en la parametrizacion.")
+                continue
+            line.job_role_code = matched_role.code or ""
+            line.job_role_name = matched_role.name
+            line.weekly_target_hours = matched_role.weekly_target_hours
+            line.daily_max_hours = matched_role.daily_max_hours
+
+        employee_name = str(get_row_value(row, "Empleado") or "").strip()
+        if employee_name:
+            line.employee_name = employee_name
+
+        form_data: dict[str, object] = {}
+        for index in range(7):
+            form_data[f"day_{index}_shift_1"] = getattr(line, f"day_{index}_shift_1", "") or ""
+            form_data[f"day_{index}_shift_2"] = getattr(line, f"day_{index}_shift_2", "") or ""
+            form_data[f"day_{index}_compensation_mode"] = getattr(line, f"day_{index}_compensation_mode", "") or ""
+            current_hours = decimal_hours(getattr(line, f"day_{index}_compensation_hours", Decimal("0.00")) or "0")
+            form_data[f"day_{index}_compensation_hours"] = serialize_decimal(current_hours)
+            if bool(getattr(line, f"day_{index}_inventory", False)):
+                form_data[f"day_{index}_inventory"] = "on"
+
+        current_manual_days = decimal_hours(line.manual_day_adjustment)
+        current_manual_hours = decimal_hours(line.manual_hour_adjustment)
+        form_data["manual_day_adjustment"] = serialize_decimal(current_manual_days)
+        form_data["manual_hour_adjustment"] = serialize_decimal(current_manual_hours)
+
+        try:
+            for day_index, column in enumerate(day_columns):
+                day_label = str(column["label"])
+                form_data[f"day_{day_index}_shift_1"] = str(get_row_value(row, f"{day_label} turno 1") or "").strip()
+                form_data[f"day_{day_index}_shift_2"] = str(get_row_value(row, f"{day_label} turno 2") or "").strip()
+                form_data[f"day_{day_index}_compensation_mode"] = normalize_schedule_upload_compensation_mode(
+                    get_row_value(row, f"{day_label} modo pago")
+                )
+                imported_hours = parse_schedule_flat_decimal(
+                    get_row_value(row, f"{day_label} horas pago"),
+                    f"{day_label} horas pago",
+                    row_number,
+                )
+                form_data[f"day_{day_index}_compensation_hours"] = serialize_decimal(imported_hours)
+                if parse_schedule_flat_boolean(get_row_value(row, f"{day_label} inventario")):
+                    form_data[f"day_{day_index}_inventory"] = "on"
+                else:
+                    form_data.pop(f"day_{day_index}_inventory", None)
+
+            form_data["manual_day_adjustment"] = serialize_decimal(
+                parse_schedule_flat_decimal(get_row_value(row, "Ajuste dias"), "ajuste dias", row_number)
+            )
+            form_data["manual_hour_adjustment"] = serialize_decimal(
+                parse_schedule_flat_decimal(get_row_value(row, "Ajuste horas"), "ajuste horas", row_number)
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+
+        line_form = ScheduleLineForm(
+            data=form_data,
+            instance=line,
+            schedule=schedule,
+            shift_choices=shift_choices,
+            secondary_shift_choices=secondary_shift_choices,
+            readonly=False,
+            allow_money_payment=allow_money_payment,
+            show_admin_fields=True,
+        )
+
+        if not line_form.is_valid():
+            row_errors: list[str] = []
+            for field_name, field_errors in line_form.errors.items():
+                for error in field_errors:
+                    row_errors.append(f"{field_name}: {error}")
+            for error in line_form.non_field_errors():
+                row_errors.append(str(error))
+            if not row_errors:
+                row_errors.append("Hay datos invalidos en la fila.")
+            errors.append(f"Fila {row_number} ({identifier}): " + " | ".join(row_errors))
+            continue
+
+        prepared_line = line_form.save(commit=False)
+        prepared_lines.append(prepared_line)
+        touched_identifiers.append(identifier)
+
+    if errors:
+        message = " ".join(errors[:5])
+        if len(errors) > 5:
+            message += f" Hay {len(errors) - 5} error(es) adicional(es) en el archivo."
+        raise ValueError(message)
+
+    if not prepared_lines:
+        raise ValueError("El archivo no contiene filas de horario para procesar.")
+
+    touched_identifiers = sorted({identifier for identifier in touched_identifiers if identifier})
+    with transaction.atomic():
+        for prepared_line in prepared_lines:
+            prepared_line.save()
+        if updated_by is not None:
+            schedule.updated_by = updated_by
+            schedule.save(update_fields=["updated_by", "updated_at"])
+        rebuild_balances_for_employees_from_week(schedule.week_start_date, touched_identifiers)
+
+    return {
+        "processed_count": len(prepared_lines),
         "touched_identifiers": touched_identifiers,
     }
 

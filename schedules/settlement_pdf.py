@@ -43,8 +43,6 @@ def get_settlement_rows(schedule: WeeklySchedule) -> list[SettlementRow]:
     for line in schedule.lines.all().order_by("job_role_name", "employee_name"):
         accrued_days = Decimal(str(line.accrued_day_balance or "0")).quantize(TWO_DECIMALS)
         accrued_hours = Decimal(str(line.accrued_hour_balance or "0")).quantize(TWO_DECIMALS)
-        if accrued_days == Decimal("0.00") and accrued_hours == Decimal("0.00"):
-            continue
         rows.append(
             SettlementRow(
                 employee_identifier=(line.employee_identifier or "").strip(),

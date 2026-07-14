@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
+import re
 
 from django.http import HttpResponse
 
@@ -12,9 +13,11 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from core.access import get_accessible_schedules_queryset
+from core.models import ShiftTemplate
 from schedules.models import ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
 from schedules.services import (
     build_line_day_breakdown,
+    build_schedule_flat_file_headers,
     get_schedule_line_activity_indices,
     get_schedule_line_progression_key,
 )
@@ -33,6 +36,9 @@ SPANISH_MONTH_NAMES = {
     11: "Noviembre",
     12: "Diciembre",
 }
+SHIFT_RANGE_PATTERN = re.compile(r"^(?P<start>\d{1,2}:\d{2})-(?P<end>\d{1,2}:\d{2})$")
+HOURLY_COVERAGE_START_HOUR = 6
+HOURLY_COVERAGE_END_HOUR = 21
 
 
 @dataclass(slots=True)
@@ -78,6 +84,32 @@ def excel_number(value) -> int | float:
     if decimal_value == decimal_value.to_integral():
         return int(decimal_value)
     return float(decimal_value)
+
+
+def excel_number_or_blank(value):
+    decimal_value = Decimal(str(value or "0"))
+    if decimal_value == Decimal("0"):
+        return ""
+    return excel_number(decimal_value)
+
+
+def workbook_to_response(workbook: Workbook, filename: str) -> HttpResponse:
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    response = HttpResponse(
+        output.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def workbook_to_bytes(workbook: Workbook) -> bytes:
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output.getvalue()
 
 
 def build_schedule_excel_response(schedule: WeeklySchedule) -> HttpResponse:
@@ -182,17 +214,70 @@ def build_schedule_excel_response(schedule: WeeklySchedule) -> HttpResponse:
     worksheet.page_setup.orientation = "landscape"
     worksheet.page_setup.fitToWidth = 1
 
-    output = BytesIO()
-    workbook.save(output)
-    output.seek(0)
-
     filename = f"horario_{schedule.site.code}_{schedule.week_start_date:%Y%m%d}.xlsx"
-    response = HttpResponse(
-        output.getvalue(),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return response
+    return workbook_to_response(workbook, filename)
+
+
+def build_schedule_flat_file_template_response(schedule: WeeklySchedule) -> HttpResponse:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "PlantillaHorario"
+
+    headers = build_schedule_flat_file_headers(schedule)
+    worksheet.append(headers)
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    compensation_labels = dict(ScheduleLine.CompensationMode.choices)
+    ordered_lines = schedule.lines.all().order_by("job_role_name", "employee_name", "employee_identifier")
+    for line in ordered_lines:
+        row = [
+            line.employee_identifier,
+            line.employee_name,
+            line.job_role_name,
+        ]
+        for index in range(7):
+            compensation_mode = getattr(line, f"day_{index}_compensation_mode", "") or ""
+            row.extend(
+                [
+                    getattr(line, f"day_{index}_shift_1", "") or "",
+                    getattr(line, f"day_{index}_shift_2", "") or "",
+                    compensation_labels.get(compensation_mode, "") if compensation_mode else "",
+                    excel_number_or_blank(getattr(line, f"day_{index}_compensation_hours", Decimal("0.00"))),
+                    "Si" if bool(getattr(line, f"day_{index}_inventory", False)) else "",
+                ]
+            )
+        row.extend(
+            [
+                excel_number_or_blank(line.manual_day_adjustment),
+                excel_number_or_blank(line.manual_hour_adjustment),
+            ]
+        )
+        worksheet.append(row)
+
+    for column_cells in worksheet.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 26)
+
+    info_sheet = workbook.create_sheet("Catalogos")
+    info_sheet.append(["Tipo", "Valor"])
+    info_sheet.append(["Instruccion", "Edita la hoja PlantillaHorario y vuelve a cargar el archivo desde el portal."])
+    info_sheet.append(["Instruccion", "Los modos de pago admitidos son: Sin pago, Pago dia, Pago horas, Descanso adelantado, Pago dinero dia y Pago dinero horas."])
+    info_sheet.append(["Instruccion", "La columna Inventario admite Si o vacio."])
+    info_sheet.append([])
+    info_sheet.append(["Turnos disponibles", ""])
+    for shift in ShiftTemplate.objects.filter(is_active=True).order_by("display_order", "label"):
+        info_sheet.append(["Turno", shift.label])
+
+    for cell in info_sheet[1]:
+        cell.font = Font(bold=True)
+    for column_cells in info_sheet.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        info_sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 16), 60)
+
+    filename = f"plantilla_horario_{schedule.site.code}_{schedule.week_start_date:%Y%m%d}.xlsx"
+    return workbook_to_response(workbook, filename)
 
 
 def build_initial_balance_template_response() -> HttpResponse:
@@ -209,16 +294,130 @@ def build_initial_balance_template_response() -> HttpResponse:
         max_length = max(len(str(cell.value or "")) for cell in column_cells)
         worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 24)
 
-    output = BytesIO()
-    workbook.save(output)
-    output.seek(0)
+    return workbook_to_response(workbook, "plantilla_saldos_iniciales.xlsx")
 
-    response = HttpResponse(
-        output.getvalue(),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+
+def shift_label_to_minutes(label: str, shift_templates: dict[str, ShiftTemplate]) -> tuple[int, int] | None:
+    normalized = str(label or "").strip()
+    if not normalized:
+        return None
+
+    template = shift_templates.get(normalized)
+    if template is not None:
+        if not (template.counts_as_worked_time and template.start_time and template.end_time):
+            return None
+        start_minutes = template.start_time.hour * 60 + template.start_time.minute
+        end_minutes = template.end_time.hour * 60 + template.end_time.minute
+        if end_minutes <= start_minutes:
+            end_minutes += 24 * 60
+        return start_minutes, end_minutes
+
+    match = SHIFT_RANGE_PATTERN.match(normalized)
+    if not match:
+        return None
+    start_text = match.group("start")
+    end_text = match.group("end")
+    start_hour, start_minute = [int(value) for value in start_text.split(":")]
+    end_hour, end_minute = [int(value) for value in end_text.split(":")]
+    start_minutes = (start_hour * 60) + start_minute
+    end_minutes = (end_hour * 60) + end_minute
+    if end_minutes <= start_minutes:
+        end_minutes += 24 * 60
+    return start_minutes, end_minutes
+
+
+def build_hourly_coverage_schedule_workbook(schedule: WeeklySchedule) -> Workbook:
+    workbook = Workbook()
+    summary_sheet = workbook.active
+    summary_sheet.title = "Resumen"
+    summary_sheet.append(["Reporte", "Cobertura por franjas horarias"])
+    summary_sheet.append(["Sede", schedule.site.name])
+    summary_sheet.append(["Semana inicio", schedule.week_start_date.strftime("%d/%m/%Y")])
+    summary_sheet.append(["Semana fin", schedule.week_end_date.strftime("%d/%m/%Y")])
+    summary_sheet.append(["Estado", schedule.get_status_display()])
+    summary_sheet.append(["Rango horario", f"{HOURLY_COVERAGE_START_HOUR:02d}:00 a {HOURLY_COVERAGE_END_HOUR:02d}:00"])
+    for row in summary_sheet.iter_rows(min_row=1, max_row=summary_sheet.max_row):
+        row[0].font = Font(bold=True)
+    summary_sheet.column_dimensions["A"].width = 18
+    summary_sheet.column_dimensions["B"].width = 40
+
+    lines = list(schedule.lines.all().order_by("job_role_name", "employee_name", "employee_identifier"))
+    role_names = sorted(
+        {
+            ((line.job_role_name or "").strip() or "SIN CARGO")
+            for line in lines
+        },
+        key=str.casefold,
     )
-    response["Content-Disposition"] = 'attachment; filename="plantilla_saldos_iniciales.xlsx"'
-    return response
+    selected_labels = {
+        str(getattr(line, f"day_{index}_shift_{slot}", "") or "").strip()
+        for line in lines
+        for index in range(7)
+        for slot in (1, 2)
+        if str(getattr(line, f"day_{index}_shift_{slot}", "") or "").strip()
+    }
+    shift_templates = {
+        shift.label: shift
+        for shift in ShiftTemplate.objects.filter(label__in=selected_labels, is_active=True)
+    }
+
+    coverage_counts: dict[tuple[int, str, int], int] = defaultdict(int)
+    for line in lines:
+        role_name = ((line.job_role_name or "").strip() or "SIN CARGO")
+        for day_index in range(7):
+            covered_hours: set[int] = set()
+            for slot in (1, 2):
+                interval = shift_label_to_minutes(
+                    getattr(line, f"day_{day_index}_shift_{slot}", "") or "",
+                    shift_templates,
+                )
+                if interval is None:
+                    continue
+                start_minutes, end_minutes = interval
+                for hour in range(HOURLY_COVERAGE_START_HOUR, HOURLY_COVERAGE_END_HOUR):
+                    slot_start = hour * 60
+                    slot_end = (hour + 1) * 60
+                    if min(end_minutes, slot_end) > max(start_minutes, slot_start):
+                        covered_hours.add(hour)
+            for hour in covered_hours:
+                coverage_counts[(day_index, role_name, hour)] += 1
+
+    for day_index, column in enumerate(schedule.get_day_columns()):
+        sheet = workbook.create_sheet(f"{column['label'][:20]}")
+        title = f"{column['label']} {column['date']} - {schedule.site.name}"
+        sheet["A1"] = title
+        sheet["A1"].font = Font(bold=True)
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(len(role_names) + 1, 2))
+        headers = ["Franja horaria", *role_names]
+        sheet.append(headers)
+        for cell in sheet[2]:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for hour in range(HOURLY_COVERAGE_START_HOUR, HOURLY_COVERAGE_END_HOUR):
+            row = [f"{hour:02d}:00-{hour + 1:02d}:00"]
+            for role_name in role_names:
+                row.append(coverage_counts.get((day_index, role_name, hour), 0))
+            sheet.append(row)
+
+        for column_index, column_cells in enumerate(sheet.columns, start=1):
+            max_length = max(len(str(cell.value or "")) for cell in column_cells)
+            sheet.column_dimensions[get_column_letter(column_index)].width = min(max(max_length + 2, 14), 34)
+        sheet.freeze_panes = "A3"
+
+    return workbook
+
+
+def build_hourly_coverage_excel_response(schedule: WeeklySchedule) -> HttpResponse:
+    workbook = build_hourly_coverage_schedule_workbook(schedule)
+    filename = f"cobertura_horaria_{schedule.site.code}_{schedule.week_start_date:%Y%m%d}.xlsx"
+    return workbook_to_response(workbook, filename)
+
+
+def build_hourly_coverage_report_attachment(schedule: WeeklySchedule) -> tuple[str, bytes]:
+    workbook = build_hourly_coverage_schedule_workbook(schedule)
+    filename = f"cobertura_horaria_{schedule.site.code}_{schedule.week_start_date:%Y%m%d}.xlsx"
+    return filename, workbook_to_bytes(workbook)
 
 
 def get_accessible_schedule_queryset_for_range(user, date_from: date, date_to: date, site=None):

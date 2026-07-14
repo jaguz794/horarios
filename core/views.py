@@ -1,3 +1,4 @@
+from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import Count
 from django.core.exceptions import PermissionDenied
@@ -12,6 +13,7 @@ from schedules.models import WeeklySchedule
 from schedules.reporting import (
     build_balance_role_breakdown,
     build_excel_response,
+    build_hourly_coverage_excel_response,
     build_inventory_report_rows,
     build_night_bonus_report_rows,
     build_overtime_balance_report_rows,
@@ -137,6 +139,21 @@ class ReportHubView(LoginRequiredMixin, TemplateView):
         context["is_admin_scope"] = user_can_manage_all_sites(self.request.user)
         return context
 
+    def get_single_week_schedule(self, week_start_date, site=None):
+        queryset = get_accessible_schedules_queryset(
+            self.request.user,
+            WeeklySchedule.objects.select_related("site").prefetch_related("lines"),
+        ).filter(week_start_date=week_start_date)
+        if site is not None:
+            queryset = queryset.filter(site=site)
+
+        schedules = list(queryset[:2])
+        if not schedules:
+            return None, "No existe un horario cargado para esa semana."
+        if len(schedules) > 1:
+            return None, "Selecciona una sede para generar el reporte de franjas de un unico horario."
+        return schedules[0], ""
+
     def post(self, request, *args, **kwargs):
         report_type = request.POST.get("report_type", "")
         is_admin_scope = user_can_manage_all_sites(request.user)
@@ -178,7 +195,7 @@ class ReportHubView(LoginRequiredMixin, TemplateView):
                     "recargos_nocturnos.xlsx",
                 )
 
-        if report_type in {"weekly_balance", "inventory_excel", "inventory_pdf"}:
+        if report_type in {"weekly_balance", "inventory_excel", "inventory_pdf", "coverage_excel"}:
             if weekly_form.is_valid():
                 site = weekly_form.cleaned_data.get("site")
                 week_start_date = weekly_form.cleaned_data["week_start_date"]
@@ -198,6 +215,17 @@ class ReportHubView(LoginRequiredMixin, TemplateView):
                         ["Fecha inventario", "Mes", "Sede", "Cedula", "Nombre", "Cargo", "Valor"],
                         rows,
                         "inventario_semanal.xlsx",
+                    )
+                if report_type == "coverage_excel":
+                    schedule, error_message = self.get_single_week_schedule(week_start_date, site=site)
+                    if schedule is not None:
+                        return build_hourly_coverage_excel_response(schedule)
+                    messages.error(request, error_message)
+                    return self.render_to_response(
+                        self.get_context_data(
+                            range_form=range_form,
+                            weekly_form=weekly_form,
+                        )
                     )
 
                 pdf_bytes = build_inventory_week_pdf_bytes(lines, week_start_date)

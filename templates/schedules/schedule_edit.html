@@ -11,6 +11,9 @@
     <div>
       <h2>Resumen de captura</h2>
       <p>Primer dia configurado: {{ schedule.get_first_day_index_display }}.</p>
+      {% if not schedule_closed %}
+      <p class="closed-note">Autoguardado activo cada 30 segundos mientras editas este horario.</p>
+      {% endif %}
       {% if schedule_closed %}
       <p class="closed-note">Este horario esta publicado y quedo cerrado para edicion.</p>
       {% elif schedule.status == "published" %}
@@ -29,6 +32,10 @@
         {% csrf_token %}
         <button type="submit" class="ghost-button">Recargar personal</button>
       </form>
+      {% endif %}
+      <a href="{% url 'schedules:excel-download' schedule.pk %}" class="ghost-button">Descargar Excel</a>
+      {% if show_admin_balance_controls %}
+      <a href="{% url 'schedules:flatfile-template' schedule.pk %}" class="ghost-button">Plantilla plano</a>
       {% endif %}
       {% if can_delete_schedules %}
       <form method="post" action="{% url 'schedules:delete' schedule.pk %}" onsubmit="return confirm('Se eliminara este horario y todos sus registros. Deseas continuar?');">
@@ -64,6 +71,42 @@
             {% if not field.is_hidden %}<span>{{ field.label }}</span>{% endif %}
             {{ field }}
             {{ field.errors }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+    </form>
+  </details>
+  {% endif %}
+
+  {% if show_admin_balance_controls and not schedule_closed %}
+  <details class="manual-add-disclosure">
+    <summary class="ghost-button manual-add-summary">Cargar horario por archivo plano</summary>
+    <form
+      method="post"
+      action="{% url 'schedules:flatfile-upload' schedule.pk %}"
+      enctype="multipart/form-data"
+      class="manual-add-form"
+    >
+      {% csrf_token %}
+      <div class="panel-subsection">
+        <div class="panel-subsection-header">
+          <div>
+            <h3>Archivo plano del horario</h3>
+            <p>Descarga la plantilla actual, corrige turnos, pagos, inventario o ajustes y vuelve a cargarla sin perder la estructura de la semana.</p>
+          </div>
+          <div class="manual-add-actions">
+            <a href="{% url 'schedules:flatfile-template' schedule.pk %}" class="ghost-button">Descargar plantilla</a>
+            <button type="submit" class="manual-add-submit-button">Cargar archivo</button>
+          </div>
+        </div>
+        <div class="field-grid manual-add-grid">
+          {% for field in schedule_upload_form %}
+          <label class="field-group">
+            <span>{{ field.label }}</span>
+            {{ field }}
+            {{ field.errors }}
+            {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
           </label>
           {% endfor %}
         </div>

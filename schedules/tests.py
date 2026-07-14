@@ -5,10 +5,11 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from openpyxl import Workbook, load_workbook
 
@@ -23,6 +24,7 @@ from schedules.models import (
     WeeklySchedule,
 )
 from schedules.services import (
+    build_schedule_flat_file_headers,
     build_schedule_balance_audit_rows,
     copy_schedule_template,
     get_rest_shift_label,
@@ -34,6 +36,7 @@ from schedules.services import (
     rebuild_balances_for_employees_from_week,
     sync_schedule_from_legacy,
 )
+from schedules.settlement_pdf import get_settlement_rows
 from schedules.templatetags.schedule_tags import hours_int, non_negative_hours_int
 
 User = get_user_model()
@@ -2466,6 +2469,103 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(worksheet["E7"].value, "Turno 2")
         self.assertEqual(worksheet["F7"].value, "Horas")
         self.assertEqual(worksheet["A8"].value, self.line.employee_identifier)
+
+    def test_settlement_rows_include_employees_with_zero_balance(self):
+        self.line.day_0_shift_1 = ""
+        recalculate_schedule_line(self.line)
+        self.line.save()
+        rows = get_settlement_rows(self.schedule)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].employee_identifier, self.line.employee_identifier)
+        self.assertEqual(rows[0].accrued_days, Decimal("0.00"))
+        self.assertEqual(rows[0].accrued_hours, Decimal("0.00"))
+
+    def test_admin_can_download_schedule_flat_file_template(self):
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:flatfile-template", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        workbook = load_workbook(BytesIO(response.content))
+        worksheet = workbook.active
+        expected_headers = build_schedule_flat_file_headers(self.schedule)
+        self.assertEqual(worksheet["A1"].value, expected_headers[0])
+        self.assertEqual(worksheet["D1"].value, expected_headers[3])
+        self.assertEqual(worksheet["A2"].value, self.line.employee_identifier)
+
+    def test_admin_can_upload_schedule_flat_file(self):
+        self.client.login(username="admin_delete", password="secret")
+        workbook = Workbook()
+        worksheet = workbook.active
+        headers = build_schedule_flat_file_headers(self.schedule)
+        worksheet.append(headers)
+        row = {header: "" for header in headers}
+        row["Cedula"] = self.line.employee_identifier
+        row["Empleado"] = self.line.employee_name
+        row["Cargo"] = self.line.job_role_name
+        row["Domingo turno 1"] = "08:00-16:00"
+        row["Domingo inventario"] = "Si"
+        row["Lunes turno 1"] = "06:00-10:00"
+        row["Lunes turno 2"] = "13:00-17:00"
+        row["Ajuste dias"] = 1
+        row["Ajuste horas"] = 2
+        worksheet.append([row[header] for header in headers])
+        upload_buffer = BytesIO()
+        workbook.save(upload_buffer)
+        upload_buffer.seek(0)
+        upload = SimpleUploadedFile(
+            "horario_plano.xlsx",
+            upload_buffer.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        response = self.client.post(
+            reverse("schedules:flatfile-upload", kwargs={"pk": self.schedule.pk}),
+            {
+                "schedulefile-file": upload,
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.line.refresh_from_db()
+        self.assertTrue(self.line.day_0_inventory)
+        self.assertEqual(self.line.day_1_shift_1, "06:00-10:00")
+        self.assertEqual(self.line.day_1_shift_2, "13:00-17:00")
+        self.assertEqual(self.line.manual_day_adjustment, Decimal("1.00"))
+        self.assertEqual(self.line.manual_hour_adjustment, Decimal("2.00"))
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_review_transition_sends_hourly_coverage_email(self):
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.REVIEW,
+                notes="Pasa a revision",
+            ),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.status, WeeklySchedule.Status.REVIEW)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Horario en revision", mail.outbox[0].subject)
+        self.assertEqual(len(mail.outbox[0].attachments), 1)
+        self.assertIn("cobertura_horaria_", mail.outbox[0].attachments[0][0])
 
 
 class ScheduleLoadViewTests(TestCase):

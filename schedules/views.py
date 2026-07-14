@@ -13,6 +13,7 @@ from core.models import JobRole, SystemConfiguration
 from schedules.forms import (
     DOCUMENT_NUMBER_PATTERN,
     InitialBalanceUploadForm,
+    ScheduleFlatFileUploadForm,
     ScheduleLineFormSet,
     ScheduleFilterForm,
     ScheduleLineManualAddForm,
@@ -22,11 +23,17 @@ from schedules.forms import (
     build_shift_choices,
 )
 from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
-from schedules.reporting import build_initial_balance_template_response, build_schedule_excel_response
+from schedules.notifications import send_schedule_review_report
+from schedules.reporting import (
+    build_initial_balance_template_response,
+    build_schedule_excel_response,
+    build_schedule_flat_file_template_response,
+)
 from schedules.services import (
     build_shift_metrics_catalog,
     copy_schedule_template,
     import_employee_initial_balances,
+    import_schedule_flat_file,
     is_employee_blacklisted,
     purge_blacklisted_lines_from_schedule,
     rebuild_balances_for_employees_from_week,
@@ -188,6 +195,9 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             manual_name_enabled=manual_name_enabled,
             lookup_found=lookup_found,
         )
+
+    def get_schedule_upload_form(self, data=None, files=None):
+        return ScheduleFlatFileUploadForm(data=data, files=files, prefix="schedulefile")
 
     def get_line_form_kwargs(self, schedule, readonly: bool = False):
         is_admin_scope = user_can_manage_all_sites(self.request.user)
@@ -355,6 +365,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
                 )
             )
 
+        previous_status = schedule.status
         schedule_form = WeeklyScheduleForm(request.POST, instance=schedule)
         line_formset = ScheduleLineFormSet(
             request.POST,
@@ -389,6 +400,20 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
                         rebuild_balances=False,
                     )
 
+            review_report_feedback = None
+            if not autosave_request and previous_status != WeeklySchedule.Status.REVIEW and (
+                updated_schedule.status == WeeklySchedule.Status.REVIEW
+            ):
+                try:
+                    sent, feedback_message = send_schedule_review_report(updated_schedule)
+                except Exception as exc:
+                    review_report_feedback = (
+                        "warning",
+                        f"No fue posible enviar el informe de cobertura por correo: {exc}",
+                    )
+                else:
+                    review_report_feedback = ("success" if sent else "warning", feedback_message)
+
             if autosave_request:
                 return JsonResponse(
                     {
@@ -399,6 +424,9 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
                     }
                 )
             messages.success(request, "Horario actualizado correctamente.")
+            if review_report_feedback:
+                level, feedback_message = review_report_feedback
+                getattr(messages, level)(request, feedback_message)
             return redirect("schedules:edit", pk=schedule.pk)
 
         if autosave_request:
@@ -437,6 +465,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             "schedule": schedule,
             "schedule_form": schedule_form,
             "manual_add_form": manual_add_form,
+            "schedule_upload_form": self.get_schedule_upload_form(),
             "line_formset": line_formset,
             "day_columns": schedule.get_day_columns(),
             "config": config,
@@ -529,6 +558,55 @@ class ScheduleExcelDownloadView(LoginRequiredMixin, View):
         )
         schedule = get_object_or_404(queryset, pk=self.kwargs["pk"])
         return build_schedule_excel_response(schedule)
+
+
+class ScheduleFlatFileTemplateDownloadView(LoginRequiredMixin, View):
+    def get(self, request, *args, **kwargs):
+        if not user_can_manage_all_sites(request.user):
+            raise PermissionDenied("Solo administracion puede descargar la plantilla del horario.")
+        queryset = get_accessible_schedules_queryset(
+            request.user,
+            WeeklySchedule.objects.select_related("site").prefetch_related("lines"),
+        )
+        schedule = get_object_or_404(queryset, pk=self.kwargs["pk"])
+        return build_schedule_flat_file_template_response(schedule)
+
+
+class ScheduleFlatFileUploadView(LoginRequiredMixin, View):
+    def post(self, request, *args, **kwargs):
+        if not user_can_manage_all_sites(request.user):
+            raise PermissionDenied("Solo administracion puede cargar el archivo plano del horario.")
+
+        queryset = get_accessible_schedules_queryset(
+            request.user,
+            WeeklySchedule.objects.select_related("site").prefetch_related("lines"),
+        )
+        schedule = get_object_or_404(queryset, pk=self.kwargs["pk"])
+        if schedule.is_closed:
+            messages.error(request, "El horario publicado esta cerrado y no admite cargue por archivo plano.")
+            return redirect("schedules:edit", pk=schedule.pk)
+
+        form = ScheduleFlatFileUploadForm(request.POST, request.FILES, prefix="schedulefile")
+        if form.is_valid():
+            try:
+                result = import_schedule_flat_file(
+                    schedule,
+                    form.cleaned_data["file"],
+                    updated_by=request.user,
+                    allow_money_payment=user_can_manage_all_sites(request.user),
+                )
+            except ValueError as exc:
+                messages.error(request, str(exc))
+            else:
+                messages.success(
+                    request,
+                    "Archivo plano aplicado correctamente. "
+                    f"Trabajadores actualizados: {result['processed_count']}.",
+                )
+                return redirect("schedules:edit", pk=schedule.pk)
+        else:
+            messages.error(request, "Revisa el archivo antes de cargar el horario en plano.")
+        return redirect("schedules:edit", pk=schedule.pk)
 
 
 class InitialBalanceUploadView(LoginRequiredMixin, TemplateView):

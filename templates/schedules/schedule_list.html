@@ -57,6 +57,9 @@
               {% if schedule.is_closed %}Ver{% else %}Editar{% endif %}
             </a>
             <a href="{% url 'schedules:excel-download' schedule.pk %}" class="text-link">Excel</a>
+            {% if is_admin_scope %}
+            <a href="{% url 'schedules:flatfile-template' schedule.pk %}" class="text-link">Plantilla plano</a>
+            {% endif %}
             {% if schedule.status == "published" %}
             <a href="{% url 'schedules:settlement-download' schedule.pk %}" class="text-link">Paz y salvo</a>
             {% endif %}

@@ -833,3 +833,24 @@ class InitialBalanceUploadForm(StyledFormMixin, forms.Form):
         if not file_name.endswith((".xlsx", ".csv")):
             raise forms.ValidationError("El cargador de saldos iniciales solo admite archivos .xlsx o .csv.")
         return uploaded_file
+
+
+class ScheduleFlatFileUploadForm(StyledFormMixin, forms.Form):
+    file = forms.FileField(
+        label="Archivo plano del horario",
+        help_text=(
+            "Carga un archivo .xlsx o .csv basado en la plantilla del horario para actualizar turnos, "
+            "pagos, inventario y ajustes manuales."
+        ),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.apply_style()
+
+    def clean_file(self):
+        uploaded_file = self.cleaned_data["file"]
+        file_name = (uploaded_file.name or "").strip().lower()
+        if not file_name.endswith((".xlsx", ".csv")):
+            raise forms.ValidationError("El cargador del horario solo admite archivos .xlsx o .csv.")
+        return uploaded_file

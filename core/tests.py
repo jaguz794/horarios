@@ -352,6 +352,43 @@ class ReportHubViewTests(TestCase):
         self.assertIn("planilla_inventario_20260705.pdf", response["Content-Disposition"])
         self.assertGreater(len(response.content), 1000)
 
+    def test_reports_can_export_hourly_coverage_excel(self):
+        lines = list(self.schedule.lines.order_by("employee_identifier"))
+        lines[0].job_role_name = "AUXILIAR"
+        lines[0].day_0_shift_1 = "06:00-10:00"
+        lines[0].save()
+        lines[1].job_role_name = "CAJERO"
+        lines[1].day_0_shift_1 = "08:00-12:00"
+        lines[1].save()
+
+        self.client.login(username="admin_reports", password="secret")
+        response = self.client.post(
+            reverse("reports"),
+            {
+                "week-site": str(self.site.pk),
+                "week-week_start_date": "2026-07-05",
+                "report_type": "coverage_excel",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        workbook = load_workbook(BytesIO(response.content))
+        worksheet = workbook["Domingo"]
+        self.assertEqual(worksheet["A2"].value, "Franja horaria")
+        headers = [worksheet.cell(row=2, column=index).value for index in range(1, worksheet.max_column + 1)]
+        auxiliar_column = headers.index("AUXILIAR") + 1
+        cajero_column = headers.index("CAJERO") + 1
+        self.assertEqual(worksheet.cell(row=3, column=auxiliar_column).value, 1)
+        self.assertEqual(worksheet.cell(row=3, column=cajero_column).value, 0)
+        self.assertEqual(worksheet.cell(row=5, column=auxiliar_column).value, 1)
+        self.assertEqual(worksheet.cell(row=5, column=cajero_column).value, 1)
+
 
 class UserAdminTests(TestCase):
     def setUp(self):

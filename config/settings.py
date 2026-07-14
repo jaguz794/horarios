@@ -124,6 +124,20 @@ if not DEBUG:
 FORM_RENDERER = "django.forms.renderers.TemplatesSetting"
 DATA_UPLOAD_MAX_NUMBER_FIELDS = int(os.getenv("DATA_UPLOAD_MAX_NUMBER_FIELDS", "12000"))
 
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.supermercadopopular.com").strip()
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "6465").strip() or "6465")
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "1") == "1"
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "0") == "1"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "soporte@supermercadopopular.com").strip()
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@localhost").strip()
+SCHEDULE_REVIEW_REPORT_RECIPIENTS = [
+    email.strip()
+    for email in os.getenv("SCHEDULE_REVIEW_REPORT_RECIPIENTS", DEFAULT_FROM_EMAIL).split(",")
+    if email.strip()
+]
+
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "dashboard"
 LOGOUT_REDIRECT_URL = "login"
