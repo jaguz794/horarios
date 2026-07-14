@@ -534,8 +534,9 @@ def build_weekly_balance_report_rows(lines: list[ScheduleLine]) -> list[list[obj
             line.job_role_name,
             line.employee_identifier,
             line.employee_name,
-            float(line.accrued_total_hours_balance),
-            float(line.night_bonus_hours),
+            excel_number(line.accrued_day_balance),
+            excel_number(line.accrued_hour_balance),
+            excel_number(line.night_bonus_hours),
         ]
         for line in lines
     ]

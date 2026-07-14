@@ -333,6 +333,51 @@ class ReportHubViewTests(TestCase):
         self.assertEqual(worksheet["D2"].value, "5001")
         self.assertEqual(worksheet["F2"].value, "AUXILIAR")
 
+    def test_reports_can_export_weekly_balance_with_day_and_hour_columns(self):
+        line = self.schedule.lines.order_by("employee_identifier").first()
+        line.job_role_name = "AUXILIAR"
+        line.accrued_day_balance = Decimal("2.00")
+        line.accrued_hour_balance = Decimal("5.50")
+        line.night_bonus_hours = Decimal("3.00")
+        line.save(
+            update_fields=[
+                "job_role_name",
+                "accrued_day_balance",
+                "accrued_hour_balance",
+                "night_bonus_hours",
+                "updated_at",
+            ]
+        )
+
+        self.client.login(username="admin_reports", password="secret")
+
+        response = self.client.post(
+            reverse("reports"),
+            {
+                "week-site": str(self.site.pk),
+                "week-week_start_date": "2026-07-05",
+                "report_type": "weekly_balance",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        workbook = load_workbook(BytesIO(response.content))
+        worksheet = workbook.active
+        self.assertEqual(worksheet["A1"].value, "Sede")
+        self.assertEqual(worksheet["E1"].value, "Dias acumulados")
+        self.assertEqual(worksheet["F1"].value, "Horas acumuladas")
+        self.assertEqual(worksheet["G1"].value, "Recargos nocturnos")
+        self.assertEqual(worksheet["A2"].value, "JARDIN.I")
+        self.assertEqual(worksheet["E2"].value, 2)
+        self.assertEqual(worksheet["F2"].value, 5.5)
+        self.assertEqual(worksheet["G2"].value, 3)
+
     def test_reports_can_export_inventory_pdf(self):
         self.client.login(username="admin_reports", password="secret")
 
