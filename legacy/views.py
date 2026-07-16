@@ -1,3 +1,1 @@
-from django.shortcuts import render
-
-# Create your views here.
+"""Legacy app does not expose Django views in this project."""

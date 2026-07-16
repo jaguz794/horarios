@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
 
 from core.models import Site, SystemConfiguration, TimeStampedModel
 from schedules.calendar_utils import get_special_day_label
@@ -91,6 +92,14 @@ class WeeklySchedule(TimeStampedModel):
 
 
 class ScheduleLine(TimeStampedModel):
+    class ValidationStatus(models.TextChoices):
+        VALID = "VALIDA", "Valida"
+        INCOMPLETE = "INCOMPLETA_CORREGIBLE", "Incompleta corregible"
+        OVERPLANNED = "EXCESO_PROGRAMADO", "Exceso programado"
+        IMPOSSIBLE = "IMPOSIBLE_POR_CAPACIDAD", "Imposible por capacidad"
+        AUTHORIZED_EXCEPTION = "EXCEPCION_AUTORIZADA", "Excepcion autorizada"
+        INCONSISTENT = "INCONSISTENTE", "Inconsistente"
+
     class CompensationMode(models.TextChoices):
         NONE = "", "Sin pago"
         PAY_DAY = "pay_day", "Pago dia"
@@ -110,6 +119,10 @@ class ScheduleLine(TimeStampedModel):
     job_role_name = models.CharField(max_length=140, blank=True)
     weekly_target_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
     daily_max_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    base_work_days = models.PositiveSmallIntegerField(
+        default=6,
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
+    )
 
     day_0_shift_1 = models.CharField(max_length=40, blank=True)
     day_0_shift_2 = models.CharField(max_length=40, blank=True)
@@ -172,6 +185,12 @@ class ScheduleLine(TimeStampedModel):
     advance_rest_pending_balance = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     accrued_hour_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
     accrued_total_hours_balance = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
+    available_capacity_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    validation_status = models.CharField(
+        max_length=32,
+        choices=ValidationStatus.choices,
+        default=ValidationStatus.VALID,
+    )
     validation_summary = models.TextField(blank=True)
     warnings_count = models.PositiveSmallIntegerField(default=0)
 
@@ -280,6 +299,7 @@ class ScheduleBalanceMovement(TimeStampedModel):
         OVERTIME = "overtime", "Hora extra generada"
         HOUR_DEFICIT = "hour_deficit", "Horas faltantes"
         SPECIAL_DAY = "special_day", "Domingo o festivo laborado"
+        ADDITIONAL_REST = "additional_rest", "Descanso adicional disfrutado"
         MANUAL_DAY = "manual_day", "Ajuste manual de dias"
         MANUAL_HOUR = "manual_hour", "Ajuste manual de horas"
         PAY_DAY = "pay_day", "Pago con descanso"
@@ -288,6 +308,7 @@ class ScheduleBalanceMovement(TimeStampedModel):
         PAY_MONEY_DAY = "pay_money_day", "Pago en dinero por dia"
         PAY_MONEY_HOURS = "pay_money_hours", "Pago en dinero por horas"
         PAY_MONEY = "pay_money", "Pago en dinero (anterior)"
+        REVERSAL = "reversal", "Reverso"
 
     schedule = models.ForeignKey(
         WeeklySchedule,
@@ -312,6 +333,26 @@ class ScheduleBalanceMovement(TimeStampedModel):
     quantity_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     quantity_hours = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
     equivalent_hours = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"))
+    balance_before_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    balance_after_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    movement_origin = models.CharField(max_length=40, default="horario")
+    idempotency_key = models.CharField(max_length=180, blank=True, default="")
+    is_reversal = models.BooleanField(default=False)
+    is_reversed = models.BooleanField(default=False)
+    reversed_movement = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="reversal_entries",
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="recorded_schedule_balance_movements",
+    )
     description = models.CharField(max_length=220, blank=True)
 
     class Meta:
@@ -321,6 +362,8 @@ class ScheduleBalanceMovement(TimeStampedModel):
         verbose_name_plural = "Movimientos de saldo"
         indexes = [
             models.Index(fields=["employee_identifier"], name="idx_mov_saldo_cedula"),
+            models.Index(fields=["employee_identifier", "movement_date"], name="idx_mov_saldo_ced_fec"),
+            models.Index(fields=["idempotency_key"], name="idx_mov_saldo_idempot"),
         ]
 
     def __str__(self) -> str:

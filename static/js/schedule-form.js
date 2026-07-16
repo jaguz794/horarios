@@ -14,12 +14,18 @@ function initScheduleCalculations() {
   const nightStart = scheduleTable.dataset.nightStart || "19:00";
   const defaultWeeklyHours = parseFloat(scheduleTable.dataset.defaultWeeklyHours || "0");
   const defaultDailyMax = parseFloat(scheduleTable.dataset.defaultDailyMax || "0");
+  const defaultBaseWorkDays = Number.parseInt(scheduleTable.dataset.defaultBaseWorkDays || "6", 10) || 6;
+  const programmingIntervalMinutes = Number.parseInt(
+    scheduleTable.dataset.programmingIntervalMinutes || "30",
+    10,
+  ) || 30;
   const showNightHours = scheduleTable.dataset.showNightHours === "true";
   const showDetailedAlerts = scheduleTable.dataset.showDetailedAlerts === "true";
   const scheduleClosed = scheduleTable.dataset.scheduleClosed === "true";
   const moneyHourModes = new Set(["pay_money", "pay_money_hours"]);
   const moneyDayModes = new Set(["pay_money_day"]);
   const advanceDayModes = new Set(["advance_day"]);
+  const companyDayRepaymentMode = "repay_company_day";
   const compensationModesWithHours = new Set(["pay_hours", ...moneyHourModes]);
   const restShiftLabels = new Set(["descanso"]);
   const leaveShiftLabels = new Set(["incapacidad", "traslado", "vacaciones", "renuncia", "licencia"]);
@@ -37,7 +43,6 @@ function initScheduleCalculations() {
   };
 
   const roundHours = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
-  const roundInt = (value) => Math.round(Number(value) + Number.EPSILON);
   const clampNonNegative = (value) => Math.max(roundHours(value), 0);
 
   const formatHours = (value, suffix = false) => {
@@ -46,11 +51,45 @@ function initScheduleCalculations() {
     return suffix ? `${formatted} h` : formatted;
   };
 
-  const formatBalanceHours = (value, suffix = false) => formatHours(clampNonNegative(value), suffix);
+  const formatBalanceHours = (value, suffix = false) => formatHours(value, suffix);
+
+  const describeDayBalance = (value) => {
+    const rounded = roundHours(value);
+    if (rounded > 0.001) {
+      return `${formatHours(rounded)} dia(s) a favor del trabajador`;
+    }
+    if (rounded < -0.001) {
+      return `${formatHours(Math.abs(rounded))} dia(s) a favor de la empresa`;
+    }
+    return "Sin dias pendientes";
+  };
 
   const toMinutes = (timeValue) => {
     const [hours, minutes] = timeValue.split(":").map((item) => Number.parseInt(item, 10));
     return hours * 60 + minutes;
+  };
+
+  const hoursToMinutes = (hoursValue) => Math.round(parseDecimal(hoursValue) * 60);
+  const minutesToHours = (minutesValue) => roundHours(Number(minutesValue || 0) / 60);
+  const roundMinutesToInterval = (minutesValue, intervalValue = programmingIntervalMinutes) => {
+    const safeInterval = Math.max(Number(intervalValue || 0), 1);
+    const normalizedMinutes = Math.max(Number(minutesValue || 0), 0);
+    const quotient = Math.floor(normalizedMinutes / safeInterval);
+    const remainder = normalizedMinutes - (quotient * safeInterval);
+    return remainder >= safeInterval / 2
+      ? (quotient + 1) * safeInterval
+      : quotient * safeInterval;
+  };
+  const formatMinutesDuration = (minutesValue) => {
+    const normalizedMinutes = Math.max(Math.round(Number(minutesValue || 0)), 0);
+    const hours = Math.floor(normalizedMinutes / 60);
+    const minutes = normalizedMinutes % 60;
+    return `${hours}:${String(minutes).padStart(2, "0")}`;
+  };
+  const formatSignedMinutesDuration = (minutesValue) => {
+    const normalizedMinutes = Math.round(Number(minutesValue || 0));
+    const sign = normalizedMinutes < 0 ? "-" : normalizedMinutes > 0 ? "+" : "";
+    return `${sign}${formatMinutesDuration(Math.abs(normalizedMinutes))}`;
   };
 
   const setSelectValue = (select, desiredValue) => {
@@ -121,10 +160,7 @@ function initScheduleCalculations() {
       if (dayState.dailyHours > 0.001) {
         continue;
       }
-      if (dayState.modeValue === "pay_day" || advanceDayModes.has(dayState.modeValue)) {
-        continue;
-      }
-      if (dayState.shiftCategories.has("rest")) {
+      if (dayState.modeValue === "pay_day" || advanceDayModes.has(dayState.modeValue) || dayState.shiftCategories.has("rest")) {
         return dayState.dayIndex;
       }
     }
@@ -132,33 +168,41 @@ function initScheduleCalculations() {
     return 0;
   };
 
-  const buildExpectedPlan = (dayStates, weeklyTargetValue) => {
+  const buildExpectedPlan = (dayStates, weeklyTargetValue, baseWorkDaysValue) => {
     const mandatoryRestIndex = getWeeklyRestDayIndex(dayStates);
     const expectedIndexes = [];
     const weeklyTarget = roundHours(weeklyTargetValue);
+    const weeklyTargetMinutes = hoursToMinutes(weeklyTarget);
+    const baseWorkDays = Math.max(Number.parseInt(baseWorkDaysValue || defaultBaseWorkDays, 10) || defaultBaseWorkDays, 1);
     const provisionalStates = dayStates.map((dayState) => {
       const isHoliday = String(dayState.specialDayLabel || "").includes("Festivo") && dayState.dayIndex !== 0;
+      const isNonWorkedHoliday = isHoliday && dayState.dailyHours <= 0.001;
       const isLeaveDay =
         dayState.dailyHours <= 0.001
         && dayState.shiftCategories.has("leave")
-        && !isHoliday
+        && !isNonWorkedHoliday
         && dayState.modeValue !== "pay_day"
         && !advanceDayModes.has(dayState.modeValue);
+      const isAdditionalRestDay =
+        dayState.dailyHours <= 0.001
+        && dayState.shiftCategories.has("rest")
+        && dayState.dayIndex !== mandatoryRestIndex
+        && dayState.modeValue !== "pay_day"
+        && !advanceDayModes.has(dayState.modeValue)
+        && !isNonWorkedHoliday;
 
       let expectedReason = "laborable";
       if (dayState.dayIndex === mandatoryRestIndex) {
         expectedReason = "descanso_obligatorio";
-      }
-      if (isHoliday) {
-        expectedReason = "festivo";
-      }
-      if (dayState.modeValue === "pay_day") {
+      } else if (dayState.modeValue === "pay_day") {
         expectedReason = "descanso_compensatorio";
-      }
-      if (advanceDayModes.has(dayState.modeValue)) {
+      } else if (advanceDayModes.has(dayState.modeValue)) {
         expectedReason = "descanso_adelantado";
-      }
-      if (isLeaveDay) {
+      } else if (isAdditionalRestDay) {
+        expectedReason = "descanso_adicional";
+      } else if (isNonWorkedHoliday) {
+        expectedReason = "festivo_no_trabajado";
+      } else if (isLeaveDay) {
         expectedReason = "novedad_no_laborable";
       }
       if (expectedReason === "laborable") {
@@ -168,32 +212,171 @@ function initScheduleCalculations() {
       return {
         ...dayState,
         isHoliday,
+        isNonWorkedHoliday,
         isLeaveDay,
+        isAdditionalRestDay,
         expectedReason,
       };
     });
 
     const expectedWorkDays = expectedIndexes.length;
-    const expectedWeeklyHours = expectedWorkDays > 0
-      ? roundHours((weeklyTarget * expectedWorkDays) / 6)
+    const expectedWeeklyExactMinutes = expectedWorkDays > 0
+      ? (weeklyTargetMinutes * expectedWorkDays) / baseWorkDays
       : 0;
-    const totalCents = roundInt(expectedWeeklyHours * 100);
-    const baseCents = expectedWorkDays > 0 ? Math.floor(totalCents / expectedWorkDays) : 0;
-    const remainderCents = expectedWorkDays > 0 ? totalCents % expectedWorkDays : 0;
+    const expectedWeeklyRoundedMinutes = expectedWorkDays > 0
+      ? roundMinutesToInterval(expectedWeeklyExactMinutes, programmingIntervalMinutes)
+      : 0;
+    const expectedWeeklyHours = minutesToHours(expectedWeeklyRoundedMinutes);
+    const roundedTotalMinutes = Math.round(expectedWeeklyRoundedMinutes);
+    const baseMinutes = expectedWorkDays > 0 ? Math.floor(roundedTotalMinutes / expectedWorkDays) : 0;
+    const remainderMinutes = expectedWorkDays > 0 ? roundedTotalMinutes % expectedWorkDays : 0;
     const expectedHoursByIndex = new Map();
     expectedIndexes.forEach((index, position) => {
-      const cents = baseCents + (position < remainderCents ? 1 : 0);
-      expectedHoursByIndex.set(index, roundHours(cents / 100));
+      const minutes = baseMinutes + (position < remainderMinutes ? 1 : 0);
+      expectedHoursByIndex.set(index, minutesToHours(minutes));
     });
 
     return {
       mandatoryRestIndex,
+      baseWorkDays,
       expectedWorkDays,
       expectedWeeklyHours,
+      expectedWeeklyExactMinutes,
+      roundingAdjustmentMinutes: Math.round(expectedWeeklyRoundedMinutes - expectedWeeklyExactMinutes),
       dayStates: provisionalStates.map((dayState) => ({
         ...dayState,
         expectedHours: expectedHoursByIndex.get(dayState.dayIndex) || 0,
       })),
+    };
+  };
+
+  const isCompleteWorkDay = (dayState, dayReferenceValue) => {
+    const workedHours = roundHours(dayState.dailyHours);
+    if (workedHours <= 0.001) {
+      return false;
+    }
+    if (dayState.expectedReason === "fuera_de_rango") {
+      return false;
+    }
+    if (dayState.isLeaveDay || dayState.isNonWorkedHoliday) {
+      return false;
+    }
+    if (dayState.modeValue === "pay_day" || advanceDayModes.has(dayState.modeValue)) {
+      return false;
+    }
+    const threshold = Math.max(roundHours(dayState.expectedHours || 0), roundHours(dayReferenceValue || 0));
+    return threshold > 0.001 && workedHours + 0.001 >= threshold;
+  };
+
+  const getCompanyDayRepaymentExclusionHours = (entry, dayReferenceValue) => {
+    const workedHours = roundHours(entry.workedHours || 0);
+    const expectedHours = roundHours(entry.expectedHours || 0);
+    const configuredDayHours = roundHours(entry.dailyTargetHours || 0);
+    const fullDayHours = Math.max(expectedHours, configuredDayHours, roundHours(dayReferenceValue || 0));
+    if (fullDayHours <= 0.001) {
+      return workedHours;
+    }
+    return roundHours(Math.min(workedHours, fullDayHours));
+  };
+
+  const getCompanyDayRepaymentAutoPriority = (entry) => {
+    if (entry.isMandatoryRestDay) {
+      return [0, entry.index];
+    }
+    if (entry.index === 0) {
+      return [1, entry.index];
+    }
+    if (entry.specialGenerated || entry.isHoliday) {
+      return [2, entry.index];
+    }
+    return [3, entry.index];
+  };
+
+  const getCompanyDayRepaymentErrorMessage = (reason) => {
+    if (reason === "no_negative_balance") {
+      return "Solo puedes compensar un dia a favor de la empresa si el trabajador tiene saldo negativo previo.";
+    }
+    if (reason === "partial_day") {
+      return "La jornada no puede utilizarse para compensar el descanso adelantado porque no corresponde a un dia completo.";
+    }
+    if (reason === "no_additional_full_day") {
+      return "La compensacion requiere un dia completo adicional respecto de los dias base del cargo.";
+    }
+    return "No fue posible aplicar la compensacion del dia a favor de la empresa.";
+  };
+
+  const buildCompanyDayRepaymentPlan = (entries, startingDayBalance, dayReferenceValue, baseWorkDaysValue) => {
+    const pendingCompanyDays = Math.floor(Math.abs(Math.min(roundHours(startingDayBalance), 0)));
+    const fullWorkDayIndexes = entries
+      .filter((entry) => isCompleteWorkDay(entry, dayReferenceValue))
+      .map((entry) => entry.index);
+    const additionalFullWorkDays = Math.max(fullWorkDayIndexes.length - Math.max(Number(baseWorkDaysValue || 0), 0), 0);
+    const repaymentCapacity = Math.min(additionalFullWorkDays, pendingCompanyDays);
+    const markedRepaymentIndexes = entries
+      .filter((entry) => entry.mode === companyDayRepaymentMode)
+      .map((entry) => entry.index);
+    const hasManualSelection = markedRepaymentIndexes.length > 0;
+    const invalidRepaymentReasons = {};
+    const validRepaymentIndexes = [];
+    const automaticRepaymentIndexes = [];
+    const excludedHoursByIndex = {};
+    const candidateEntries = [];
+
+    entries.forEach((entry) => {
+      const isManualSelection = entry.mode === companyDayRepaymentMode;
+      if (hasManualSelection && !isManualSelection) {
+        return;
+      }
+      if (pendingCompanyDays <= 0) {
+        if (isManualSelection) {
+          invalidRepaymentReasons[entry.index] = "no_negative_balance";
+        }
+        return;
+      }
+      if (!isCompleteWorkDay(entry, dayReferenceValue)) {
+        if (isManualSelection) {
+          invalidRepaymentReasons[entry.index] = "partial_day";
+        }
+        return;
+      }
+      candidateEntries.push(entry);
+    });
+
+    const selectedEntries = hasManualSelection
+      ? [...candidateEntries].sort((left, right) => left.index - right.index)
+      : [...candidateEntries].sort((left, right) => {
+        const [leftRank, leftIndex] = getCompanyDayRepaymentAutoPriority(left);
+        const [rightRank, rightIndex] = getCompanyDayRepaymentAutoPriority(right);
+        return leftRank - rightRank || leftIndex - rightIndex;
+      });
+
+    selectedEntries.forEach((entry, position) => {
+      const index = entry.index;
+      if (position >= repaymentCapacity) {
+        if (hasManualSelection) {
+          invalidRepaymentReasons[index] = "no_additional_full_day";
+        }
+        return;
+      }
+      validRepaymentIndexes.push(index);
+      if (!hasManualSelection) {
+        automaticRepaymentIndexes.push(index);
+      }
+      excludedHoursByIndex[index] = getCompanyDayRepaymentExclusionHours(entry, dayReferenceValue);
+    });
+
+    return {
+      startingDayBalance: roundHours(startingDayBalance),
+      pendingCompanyDays,
+      fullWorkDayIndexes,
+      completeWorkDays: fullWorkDayIndexes.length,
+      additionalFullWorkDays,
+      repaymentCapacity,
+      markedRepaymentIndexes,
+      validRepaymentIndexes,
+      automaticRepaymentIndexes,
+      invalidRepaymentReasons,
+      excludedHoursByIndex,
     };
   };
 
@@ -216,17 +399,29 @@ function initScheduleCalculations() {
   const resolvePaymentUsage = (
     entries,
     availableDayBalance,
+    startingDayBalance,
     availableHourBalance,
     weeklyTargetHoursValue,
+    baseWorkDaysValue,
+    dayReferenceValue,
   ) => {
-    let remainingDayBalance = clampNonNegative(availableDayBalance);
+    let remainingDayBalance = roundHours(availableDayBalance);
     let remainingHourBalance = clampNonNegative(availableHourBalance);
-    let cumulativeWorkedHours = 0;
+    let cumulativeCountedHours = 0;
     let cumulativeOvertimeHours = 0;
+    const repaymentPlan = buildCompanyDayRepaymentPlan(
+      entries,
+      startingDayBalance,
+      dayReferenceValue,
+      baseWorkDaysValue,
+    );
+    const validRepaymentIndexes = new Set(repaymentPlan.validRepaymentIndexes);
+    const automaticRepaymentIndexes = new Set(repaymentPlan.automaticRepaymentIndexes);
 
     let paymentDaysUsed = 0;
-    let paymentDaysFromDayBalance = 0;
-    let uncoveredPaymentDays = 0;
+    let advanceRestDaysUsed = 0;
+    let additionalRestDaysUsed = 0;
+    let companyDayRepaymentsUsed = 0;
     let moneyPaymentDaysUsed = 0;
     let paymentHoursUsed = 0;
     let moneyPaymentHoursUsed = 0;
@@ -234,6 +429,9 @@ function initScheduleCalculations() {
     const invalidPayMoneyDayIndices = [];
     const invalidPayHoursIndices = [];
     const invalidPayMoneyIndices = [];
+    const invalidCompanyDayRepaymentIndices = [];
+    let generatedSpecialDays = 0;
+    let excludedCompanyDayHours = 0;
     const dayStates = {};
 
     [...entries]
@@ -256,32 +454,74 @@ function initScheduleCalculations() {
           generatedDay: false,
           generatedHours: 0,
           hourDifference: 0,
+          appliedDayDelta: 0,
+          repaymentReason: "",
+          isCompleteWorkDay: isCompleteWorkDay(entry, dayReferenceValue),
+          excludedHoursFromOvertime: 0,
         };
 
-        if (entry.mode === "pay_day") {
-          if (remainingDayBalance + 0.001 >= 1) {
-            remainingDayBalance = clampNonNegative(remainingDayBalance - 1);
-            paymentDaysFromDayBalance += 1;
-            paymentDaysUsed += 1;
-            dayState.source = "day_balance";
+        let repaysCompanyDay = false;
+        const selectedAutomaticRepayment =
+          entry.mode !== companyDayRepaymentMode && automaticRepaymentIndexes.has(entry.index);
+        if (entry.mode === companyDayRepaymentMode || selectedAutomaticRepayment) {
+          if (validRepaymentIndexes.has(entry.index)) {
+            remainingDayBalance = roundHours(remainingDayBalance + 1);
+            companyDayRepaymentsUsed += 1;
+            repaysCompanyDay = true;
+            dayState.source = entry.mode === companyDayRepaymentMode ? "signed_day_balance" : "automatic_repayment";
+            dayState.appliedDayDelta = 1;
           } else {
-            uncoveredPaymentDays += 1;
+            invalidCompanyDayRepaymentIndices.push(entry.index);
+            dayState.source = "repayment_invalid";
+            dayState.valid = false;
+            dayState.repaymentReason = repaymentPlan.invalidRepaymentReasons[entry.index] || "";
+          }
+        } else if (entry.mode === "pay_day") {
+          const projectedBalance = roundHours(remainingDayBalance - 1);
+          if (projectedBalance >= -2 - 0.001) {
+            remainingDayBalance = projectedBalance;
+            paymentDaysUsed += 1;
+            dayState.source = "signed_day_balance";
+            dayState.appliedDayDelta = -1;
+          } else {
             invalidPayDayIndices.push(entry.index);
-            dayState.source = "insufficient";
+            dayState.source = "day_limit";
             dayState.valid = false;
           }
         } else if (moneyDayModes.has(entry.mode)) {
           if (remainingDayBalance + 0.001 >= 1) {
-            remainingDayBalance = clampNonNegative(remainingDayBalance - 1);
+            remainingDayBalance = roundHours(remainingDayBalance - 1);
             moneyPaymentDaysUsed += 1;
             dayState.source = "day_balance";
+            dayState.appliedDayDelta = -1;
           } else {
             invalidPayMoneyDayIndices.push(entry.index);
             dayState.source = "insufficient";
             dayState.valid = false;
           }
         } else if (advanceDayModes.has(entry.mode)) {
-          dayState.source = "legacy_noop";
+          const projectedBalance = roundHours(remainingDayBalance - 1);
+          if (projectedBalance >= -2 - 0.001) {
+            remainingDayBalance = projectedBalance;
+            advanceRestDaysUsed += 1;
+            additionalRestDaysUsed += 1;
+            dayState.source = "signed_day_balance";
+            dayState.appliedDayDelta = -1;
+          } else {
+            dayState.source = "day_limit";
+            dayState.valid = false;
+          }
+        } else if (entry.isAdditionalRestDay) {
+          const projectedBalance = roundHours(remainingDayBalance - 1);
+          if (projectedBalance >= -2 - 0.001) {
+            remainingDayBalance = projectedBalance;
+            additionalRestDaysUsed += 1;
+            dayState.source = "signed_day_balance";
+            dayState.appliedDayDelta = -1;
+          } else {
+            dayState.source = "day_limit";
+            dayState.valid = false;
+          }
         } else if (entry.mode === "pay_hours") {
           if (requestedHours <= 0.001 || remainingHourBalance + 0.001 < requestedHours) {
             invalidPayHoursIndices.push(entry.index);
@@ -304,14 +544,26 @@ function initScheduleCalculations() {
           }
         }
 
-        if (specialGenerated && workedHours > 0.001) {
+        if (
+          specialGenerated
+          && dayState.isCompleteWorkDay
+          && workedHours > 0.001
+          && entry.mode !== companyDayRepaymentMode
+          && !selectedAutomaticRepayment
+        ) {
           remainingDayBalance = roundHours(remainingDayBalance + 1);
           dayState.generatedDay = true;
+          generatedSpecialDays += 1;
         }
 
+        const excludedHours = repaysCompanyDay ? roundHours(repaymentPlan.excludedHoursByIndex[entry.index] || 0) : 0;
+        if (excludedHours > 0.001) {
+          excludedCompanyDayHours = roundHours(excludedCompanyDayHours + excludedHours);
+          dayState.excludedHoursFromOvertime = excludedHours;
+        }
         const previousOvertimeHours = cumulativeOvertimeHours;
-        cumulativeWorkedHours = roundHours(cumulativeWorkedHours + workedHours);
-        cumulativeOvertimeHours = roundHours(Math.max(cumulativeWorkedHours - weeklyTargetHoursValue, 0));
+        cumulativeCountedHours = roundHours(cumulativeCountedHours + Math.max(workedHours - excludedHours, 0));
+        cumulativeOvertimeHours = roundHours(Math.max(cumulativeCountedHours - weeklyTargetHoursValue, 0));
         const generatedHours = roundHours(Math.max(cumulativeOvertimeHours - previousOvertimeHours, 0));
         if (generatedHours > 0.001) {
           remainingHourBalance = roundHours(remainingHourBalance + generatedHours);
@@ -326,10 +578,14 @@ function initScheduleCalculations() {
 
     return {
       paymentDaysUsed,
-      advanceRestDaysUsed: 0,
-      paymentDaysFromDayBalance,
+      advanceRestDaysUsed,
+      additionalRestDaysUsed,
+      companyDayRepaymentsUsed,
+      automaticCompanyDayRepaymentsUsed: automaticRepaymentIndexes.size,
+      automaticRepaymentIndexes: [...automaticRepaymentIndexes].sort((left, right) => left - right),
+      paymentDaysFromDayBalance: paymentDaysUsed,
       paymentDaysFromHourBalance: 0,
-      uncoveredPaymentDays,
+      uncoveredPaymentDays: invalidPayDayIndices.length,
       moneyPaymentDaysUsed,
       paymentDayHourEquivalent: 0,
       paymentHoursUsed,
@@ -338,11 +594,17 @@ function initScheduleCalculations() {
       invalidPayMoneyDayIndices,
       invalidPayHoursIndices,
       invalidPayMoneyIndices,
+      invalidCompanyDayRepaymentIndices,
+      invalidCompanyDayRepaymentReasons: repaymentPlan.invalidRepaymentReasons,
       invalidAdvanceDayLimitIndices: [],
       invalidAdvanceDayWithBalanceIndices: [],
+      generatedSpecialDays,
+      excludedCompanyDayHours,
+      generatedOvertimeHours: cumulativeOvertimeHours,
       remainingDayBalance,
       remainingHourBalance,
       remainingAdvancePendingBalance: 0,
+      repaymentPlan,
       dayStates,
     };
   };
@@ -440,7 +702,8 @@ function initScheduleCalculations() {
   rows.forEach((row) => {
     const weeklyTarget = parseDecimal(row.dataset.weeklyTarget);
     const dailyMax = parseDecimal(row.dataset.dailyMax);
-    const priorDayBalance = clampNonNegative(parseDecimal(row.dataset.priorDayBalance));
+    const baseWorkDays = Number.parseInt(row.dataset.baseWorkDays || `${defaultBaseWorkDays}`, 10) || defaultBaseWorkDays;
+    const priorDayBalance = roundHours(parseDecimal(row.dataset.priorDayBalance));
     const priorHourBalance = clampNonNegative(parseDecimal(row.dataset.priorHourBalance));
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
     const hasOvertimeRestriction = row.dataset.overtimeRestrictionActive === "true";
@@ -483,10 +746,10 @@ function initScheduleCalculations() {
 
       if (modeValue === "pay_day") {
         paymentInfo.hidden = false;
-        if (state.paymentState?.source === "day_balance") {
-          paymentInfo.textContent = `Pago dia: usa 1 dia acumulado. Saldo estimado tras este pago: ${formatBalanceHours(state.paymentState.remainingDayBalance)} dia(s).`;
+        if (state.paymentState?.source === "signed_day_balance") {
+          paymentInfo.textContent = `Pago dia: descuenta 1 dia del saldo neto. Resultado estimado: ${describeDayBalance(state.paymentState.remainingDayBalance)}.`;
         } else {
-          paymentInfo.textContent = "Pago dia: requiere 1 dia acumulado disponible.";
+          paymentInfo.textContent = "Pago dia: no puede dejar a la persona con mas de 2 dias a favor de la empresa.";
         }
         return;
       }
@@ -503,7 +766,27 @@ function initScheduleCalculations() {
 
       if (advanceDayModes.has(modeValue)) {
         paymentInfo.hidden = false;
-        paymentInfo.textContent = "Descanso adelantado: opcion legada sin impacto adicional en el saldo mostrado.";
+        if (state.paymentState?.source === "signed_day_balance") {
+          paymentInfo.textContent = `Descanso adelantado: descuenta 1 dia del saldo neto. Resultado estimado: ${describeDayBalance(state.paymentState.remainingDayBalance)}.`;
+        } else {
+          paymentInfo.textContent = "Descanso adelantado: no puede dejar a la persona con mas de 2 dias a favor de la empresa.";
+        }
+        return;
+      }
+
+      if (modeValue === companyDayRepaymentMode) {
+        paymentInfo.hidden = false;
+        if (state.paymentState?.source === "signed_day_balance") {
+          paymentInfo.textContent = `Compensacion empresa: esta jornada completa aplicara 1 dia a favor de la empresa y no generara un nuevo dia por esta misma fecha.`;
+        } else {
+          paymentInfo.textContent = getCompanyDayRepaymentErrorMessage(state.paymentState?.repaymentReason || "");
+        }
+        return;
+      }
+
+      if (state.paymentState?.source === "automatic_repayment") {
+        paymentInfo.hidden = false;
+        paymentInfo.textContent = "Compensacion automatica: esta jornada completa aplicara 1 dia a favor de la empresa y no generara un nuevo dia por esta misma fecha.";
         return;
       }
 
@@ -533,16 +816,31 @@ function initScheduleCalculations() {
       if (!balanceNote) {
         return;
       }
-      balanceNote.textContent = `Saldo previo: ${formatBalanceHours(priorDayBalance)} dia(s) y ${formatBalanceHours(priorHourBalance)} h. Resultado estimado: ${formatBalanceHours(endingDayBalance)} dia(s) y ${formatBalanceHours(endingHourBalance)} h.`;
+      balanceNote.textContent = `Saldo previo: ${describeDayBalance(priorDayBalance)} y ${formatBalanceHours(priorHourBalance)} h. Resultado estimado: ${describeDayBalance(endingDayBalance)} y ${formatBalanceHours(endingHourBalance)} h.`;
     };
 
-    const buildLiveSummary = (summaryState) => {
+  const buildLiveSummary = (summaryState) => {
       const liveMessages = [];
+      liveMessages.push(`Estado: ${summaryState.validationStatus}.`);
+      liveMessages.push(`Jornada ajustada: ${formatHours(summaryState.expectedWeeklyHours, true)}. Programadas: ${formatHours(summaryState.totalHours, true)}. Diferencia: ${formatHours(summaryState.weeklyHourDifference, true)}.`);
+      if (summaryState.roundingAdjustmentMinutes !== 0) {
+        liveMessages.push(`Calculo exacto previo al redondeo: ${formatMinutesDuration(summaryState.expectedWeeklyExactMinutes)}. Ajuste tecnico: ${formatSignedMinutesDuration(summaryState.roundingAdjustmentMinutes)}.`);
+      }
+      liveMessages.push(`Capacidad disponible: ${formatHours(summaryState.capacityHours, true)}. Dias base: ${summaryState.baseWorkDays}. Descansos adicionales: ${summaryState.additionalRestDays}.`);
       if (summaryState.specialDaysGenerated > 0.001) {
         liveMessages.push(`Genera ${formatHours(summaryState.specialDaysGenerated)} dia(s) por domingos/festivos.`);
       }
+      if (summaryState.companyDayRepaymentsUsed > 0) {
+        liveMessages.push(`Compensa ${summaryState.companyDayRepaymentsUsed} dia(s) a favor de la empresa.`);
+      }
+      if ((summaryState.automaticCompanyDayRepaymentsUsed || 0) > 0) {
+        liveMessages.push(`Compensacion automatica aplicada en ${summaryState.automaticCompanyDayRepaymentsUsed} dia(s).`);
+      }
       if (summaryState.overtimeHours > 0.001) {
         liveMessages.push(`Extras calculadas: ${formatHours(summaryState.overtimeHours, true)}.`);
+      }
+      if (summaryState.excludedCompanyDayHours > 0.001) {
+        liveMessages.push(`Horas excluidas por compensacion: ${formatHours(summaryState.excludedCompanyDayHours, true)}.`);
       }
       if (summaryState.overtimeDailyRestrictionExceededCount > 0) {
         liveMessages.push(
@@ -561,10 +859,16 @@ function initScheduleCalculations() {
         liveMessages.push(`${summaryState.daysOverLimit} dia(s) supera(n) el maximo diario.`);
       }
       if (summaryState.invalidPayDayCount > 0) {
-        liveMessages.push("Hay descansos sin un dia acumulado disponible.");
+        liveMessages.push("Hay descansos adicionales que superan el limite de 2 dias a favor de la empresa.");
       }
       if (summaryState.invalidPayMoneyDayCount > 0) {
         liveMessages.push("Hay pagos en dinero por dia sin un dia acumulado disponible.");
+      }
+      if (summaryState.invalidAdvanceDayCount > 0 || summaryState.invalidAutoRestDayCount > 0) {
+        liveMessages.push("Hay descansos adicionales bloqueados por superar el limite de 2 dias a favor de la empresa.");
+      }
+      if (summaryState.invalidCompanyDayRepaymentCount > 0) {
+        liveMessages.push("Hay compensaciones de dias a favor de la empresa que no cumplen la jornada completa o no tienen un dia adicional disponible.");
       }
       if (summaryState.invalidHourDiscountCount > 0) {
         liveMessages.push("Hay descuentos por horas que superan el saldo acumulado disponible.");
@@ -590,8 +894,12 @@ function initScheduleCalculations() {
       }
 
       const conciseMessages = [];
+      conciseMessages.push(`Estado: ${summaryState.validationStatus}.`);
       if (summaryState.specialDaysGenerated > 0.001) {
         conciseMessages.push(`Dia(s) generado(s): ${formatHours(summaryState.specialDaysGenerated)}.`);
+      }
+      if (summaryState.companyDayRepaymentsUsed > 0) {
+        conciseMessages.push(`Compensaciones empresa: ${summaryState.companyDayRepaymentsUsed}.`);
       }
       if (summaryState.overtimeHours > 0.001) {
         conciseMessages.push(`Extras: ${formatHours(summaryState.overtimeHours, true)}.`);
@@ -602,6 +910,9 @@ function initScheduleCalculations() {
       if (
         summaryState.daysOverLimit > 0
         || summaryState.invalidPayDayCount > 0
+        || summaryState.invalidAdvanceDayCount > 0
+        || summaryState.invalidAutoRestDayCount > 0
+        || summaryState.invalidCompanyDayRepaymentCount > 0
         || summaryState.invalidHourDiscountCount > 0
         || summaryState.payHoursOverTargetCount > 0
         || summaryState.payMoneyOverTargetCount > 0
@@ -712,7 +1023,7 @@ function initScheduleCalculations() {
         });
       });
 
-      const expectedPlan = buildExpectedPlan(rawDayStates, effectiveWeeklyTarget);
+      const expectedPlan = buildExpectedPlan(rawDayStates, effectiveWeeklyTarget, baseWorkDays);
       const dayStates = expectedPlan.dayStates;
       dayStates.forEach((dayState) => {
         if (dayState.modeValue === "pay_hours") {
@@ -730,30 +1041,33 @@ function initScheduleCalculations() {
 
       const manualDayAdjustment = roundHours(parseDecimal(manualDayAdjustmentInput?.value));
       const manualHourAdjustment = roundHours(parseDecimal(manualHourAdjustmentInput?.value));
-      const weeklyHourDifference = roundHours(totalHours - expectedPlan.expectedWeeklyHours);
-      const overtimeHours = roundHours(Math.max(totalHours - effectiveWeeklyTarget, 0));
-      const overtimeWeeklyRestrictionExceeded =
-        hasOvertimeRestriction && overtimeHours > overtimeRestrictionWeeklyLimit + 0.001;
       const paymentUsage = resolvePaymentUsage(
         dayStates.map((dayState) => ({
           index: dayState.dayIndex,
           mode: dayState.modeValue,
           hours: dayState.compensationHoursValue,
           workedHours: dayState.dailyHours,
+          dailyTargetHours: effectiveDailyMax,
           expectedHours: dayState.expectedHours,
           specialGenerated: dayState.specialGenerated,
+          isMandatoryRestDay: dayState.isMandatoryRestDay,
+          isHoliday: dayState.isHoliday,
+          isAdditionalRestDay: dayState.isAdditionalRestDay,
         })),
         priorDayBalance + manualDayAdjustment,
+        priorDayBalance,
         priorHourBalance + manualHourAdjustment,
         effectiveWeeklyTarget,
+        baseWorkDays,
+        dayReferenceHours,
       );
-      const endingDayBalance = clampNonNegative(
-        priorDayBalance
-        + specialDaysGenerated
-        + manualDayAdjustment
-        - paymentUsage.paymentDaysUsed
-        - paymentUsage.moneyPaymentDaysUsed
-      );
+      const evaluatedTotalHours = roundHours(totalHours - paymentUsage.excludedCompanyDayHours);
+      const weeklyHourDifference = roundHours(evaluatedTotalHours - expectedPlan.expectedWeeklyHours);
+      const overtimeHours = roundHours(paymentUsage.generatedOvertimeHours);
+      const overtimeWeeklyRestrictionExceeded =
+        hasOvertimeRestriction && overtimeHours > overtimeRestrictionWeeklyLimit + 0.001;
+      specialDaysGenerated = paymentUsage.generatedSpecialDays;
+      const endingDayBalance = roundHours(paymentUsage.remainingDayBalance);
       const endingHourBalance = clampNonNegative(
         priorHourBalance
         + overtimeHours
@@ -784,7 +1098,7 @@ function initScheduleCalculations() {
       }
       if (dayBalanceCell) {
         dayBalanceCell.textContent = formatBalanceHours(endingDayBalance);
-        dayBalanceCell.classList.remove("metric-cell--negative");
+        dayBalanceCell.classList.toggle("metric-cell--negative", endingDayBalance < -0.001);
       }
       if (hourBalanceCell) {
         hourBalanceCell.textContent = formatBalanceHours(endingHourBalance);
@@ -793,10 +1107,35 @@ function initScheduleCalculations() {
 
       updateBalanceNote(endingDayBalance, endingHourBalance);
 
+      const capacityHours = roundHours(expectedPlan.expectedWorkDays * effectiveDailyMax);
+      const validationStatus =
+        paymentUsage.invalidPayDayIndices.length > 0
+        || (paymentUsage.invalidAdvanceDayIndices?.length || 0) > 0
+        || (paymentUsage.invalidAutoRestDayIndices?.length || 0) > 0
+        || paymentUsage.invalidCompanyDayRepaymentIndices.length > 0
+          ? "INCONSISTENTE"
+          : weeklyHourDifference > 0.001
+            ? "EXCESO_PROGRAMADO"
+            : weeklyHourDifference < -0.001
+              ? (capacityHours + 0.001 >= expectedPlan.expectedWeeklyHours
+                ? "INCOMPLETA_CORREGIBLE"
+                : "IMPOSIBLE_POR_CAPACIDAD")
+              : "VALIDA";
+
       const liveMessages = buildLiveSummary({
         totalHours,
         expectedWeeklyHours: expectedPlan.expectedWeeklyHours,
+        expectedWeeklyExactMinutes: expectedPlan.expectedWeeklyExactMinutes,
+        roundingAdjustmentMinutes: expectedPlan.roundingAdjustmentMinutes,
         weeklyHourDifference,
+        capacityHours,
+        baseWorkDays,
+        additionalRestDays: expectedPlan.dayStates.filter((dayState) => (
+          dayState.expectedReason === "descanso_compensatorio"
+          || dayState.expectedReason === "descanso_adelantado"
+          || dayState.expectedReason === "descanso_adicional"
+        )).length,
+        validationStatus,
         totalNightHours,
         overtimeHours,
         overtimeDailyRestrictionExceededCount,
@@ -805,8 +1144,14 @@ function initScheduleCalculations() {
         overtimeRestrictionWeeklyLimit,
         daysOverLimit,
         specialDaysGenerated,
+        companyDayRepaymentsUsed: paymentUsage.companyDayRepaymentsUsed,
+        automaticCompanyDayRepaymentsUsed: paymentUsage.automaticCompanyDayRepaymentsUsed,
+        excludedCompanyDayHours: paymentUsage.excludedCompanyDayHours,
         invalidPayDayCount: paymentUsage.invalidPayDayIndices.length,
         invalidPayMoneyDayCount: paymentUsage.invalidPayMoneyDayIndices.length,
+        invalidAdvanceDayCount: paymentUsage.invalidAdvanceDayIndices?.length || 0,
+        invalidAutoRestDayCount: paymentUsage.invalidAutoRestDayIndices?.length || 0,
+        invalidCompanyDayRepaymentCount: paymentUsage.invalidCompanyDayRepaymentIndices.length,
         invalidHourDiscountCount: paymentUsage.invalidPayHoursIndices.length + paymentUsage.invalidPayMoneyIndices.length,
         payHoursOverTargetCount,
         payMoneyOverTargetCount,

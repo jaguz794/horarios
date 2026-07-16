@@ -16,6 +16,8 @@ from core.access import get_accessible_schedules_queryset
 from core.models import ShiftTemplate
 from schedules.models import ScheduleBalanceMovement, ScheduleLine, WeeklySchedule
 from schedules.services import (
+    COMPANY_DAY_REPAYMENT_LABEL,
+    COMPANY_DAY_REPAYMENT_MODE,
     build_line_day_breakdown,
     build_schedule_flat_file_headers,
     get_schedule_line_activity_indices,
@@ -230,6 +232,7 @@ def build_schedule_flat_file_template_response(schedule: WeeklySchedule) -> Http
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     compensation_labels = dict(ScheduleLine.CompensationMode.choices)
+    compensation_labels[COMPANY_DAY_REPAYMENT_MODE] = COMPANY_DAY_REPAYMENT_LABEL
     ordered_lines = schedule.lines.all().order_by("job_role_name", "employee_name", "employee_identifier")
     for line in ordered_lines:
         row = [
@@ -263,7 +266,7 @@ def build_schedule_flat_file_template_response(schedule: WeeklySchedule) -> Http
     info_sheet = workbook.create_sheet("Catalogos")
     info_sheet.append(["Tipo", "Valor"])
     info_sheet.append(["Instruccion", "Edita la hoja PlantillaHorario y vuelve a cargar el archivo desde el portal."])
-    info_sheet.append(["Instruccion", "Los modos de pago admitidos son: Sin pago, Pago dia, Pago horas, Descanso adelantado, Pago dinero dia y Pago dinero horas."])
+    info_sheet.append(["Instruccion", "Los modos de pago admitidos son: Sin pago, Pago dia, Pago horas, Descanso adelantado, Compensa dia empresa, Pago dinero dia y Pago dinero horas."])
     info_sheet.append(["Instruccion", "La columna Inventario admite Si o vacio."])
     info_sheet.append([])
     info_sheet.append(["Turnos disponibles", ""])

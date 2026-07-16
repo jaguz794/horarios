@@ -148,6 +148,8 @@
         data-night-start="{{ config.night_shift_start|time:'H:i' }}"
         data-default-weekly-hours="{{ config.default_weekly_hours }}"
         data-default-daily-max="{{ config.default_daily_max_hours }}"
+        data-default-base-work-days="{{ config.default_base_work_days }}"
+        data-programming-interval-minutes="{{ config.programming_interval_minutes }}"
         data-show-night-hours="{% if show_night_hours %}true{% else %}false{% endif %}"
         data-show-detailed-alerts="{% if show_detailed_alerts %}true{% else %}false{% endif %}"
         data-show-admin-balance-controls="{% if show_admin_balance_controls %}true{% else %}false{% endif %}"
@@ -219,9 +221,12 @@
             data-role-name="{{ line_form.instance.job_role_name|default:'' }}"
             data-weekly-target="{{ line_form.instance.weekly_target_hours }}"
             data-daily-max="{{ line_form.instance.daily_max_hours }}"
-            data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance|non_negative_hours_int }}"
-            data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance|non_negative_hours_int }}"
+            data-base-work-days="{{ line_form.instance.base_work_days }}"
+            data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance|hours_int }}"
+            data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance|hours_int }}"
             data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
+            data-validation-status="{{ line_form.instance.validation_status }}"
+            data-available-capacity="{{ line_form.instance.available_capacity_hours }}"
             data-overtime-restriction-active="{% if line_form.overtime_restriction %}true{% else %}false{% endif %}"
             data-overtime-restriction-daily-limit="{{ line_form.overtime_restriction_daily_limit|default:'' }}"
             data-overtime-restriction-weekly-limit="{{ line_form.overtime_restriction_limit|default:'' }}"
@@ -290,8 +295,8 @@
             {% if show_night_hours %}
             <td class="metric-cell" data-night-hours>{{ line_form.instance.night_bonus_hours|hours_int }}</td>
             {% endif %}
-            <td class="metric-cell" data-day-balance>{{ line_form.instance.accrued_day_balance|non_negative_hours_int }}</td>
-            <td class="metric-cell" data-hour-balance>{{ line_form.instance.accrued_hour_balance|non_negative_hours_int }}</td>
+            <td class="metric-cell" data-day-balance>{{ line_form.instance.accrued_day_balance|hours_int }}</td>
+            <td class="metric-cell" data-hour-balance>{{ line_form.instance.accrued_hour_balance|hours_int }}</td>
             {% if show_admin_balance_controls %}
             <td>
               <div class="pending-cell pending-cell--compact pending-cell--days">
@@ -310,12 +315,12 @@
               <small
                 class="balance-note"
                 data-balance-note
-                data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance|non_negative_hours_int }}"
-                data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance|non_negative_hours_int }}"
+                data-prior-day-balance="{{ line_form.balance_snapshot.prior_day_balance|hours_int }}"
+                data-prior-hour-balance="{{ line_form.balance_snapshot.prior_hour_balance|hours_int }}"
                 data-prior-day-hours="{{ line_form.balance_snapshot.prior_day_equivalent_hours }}"
                 data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
               >
-                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|non_negative_hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|non_negative_hours_int }} h.
+                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h.
               </small>
               <small class="live-summary" data-live-summary></small>
               {% if line_form.non_field_errors %}

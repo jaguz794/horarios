@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -16,7 +15,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from schedules.models import ScheduleLine, ScheduleSettlementDocument, WeeklySchedule
+from schedules.models import ScheduleSettlementDocument, WeeklySchedule
 from schedules.services import rebuild_balances_for_employees_from_week
 
 TWO_DECIMALS = Decimal("0.01")

@@ -11,7 +11,14 @@ User = get_user_model()
 
 @admin.register(SystemConfiguration)
 class SystemConfigurationAdmin(admin.ModelAdmin):
-    list_display = ("organization_name", "week_start_day", "default_weekly_hours", "default_daily_max_hours")
+    list_display = (
+        "organization_name",
+        "week_start_day",
+        "default_weekly_hours",
+        "default_daily_max_hours",
+        "default_base_work_days",
+        "programming_interval_minutes",
+    )
 
     def has_add_permission(self, request):
         if SystemConfiguration.objects.exists():
@@ -52,7 +59,7 @@ class DepartmentAdmin(admin.ModelAdmin):
 
 @admin.register(JobRole)
 class JobRoleAdmin(admin.ModelAdmin):
-    list_display = ("name", "code", "weekly_target_hours", "daily_max_hours", "is_active")
+    list_display = ("name", "code", "weekly_target_hours", "daily_max_hours", "base_work_days", "is_active")
     list_filter = ("is_active",)
     search_fields = ("name", "code")
 

@@ -3,6 +3,9 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
+
+DEFAULT_PROGRAMMING_INTERVAL_MINUTES = 30
 
 
 class TimeStampedModel(models.Model):
@@ -132,6 +135,10 @@ class JobRole(TimeStampedModel):
         max_digits=5,
         decimal_places=2,
         default=Decimal("9.00"),
+    )
+    base_work_days = models.PositiveSmallIntegerField(
+        default=6,
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
     )
     is_active = models.BooleanField(default=True)
 
@@ -269,6 +276,14 @@ class SystemConfiguration(TimeStampedModel):
         max_digits=5,
         decimal_places=2,
         default=Decimal("9.00"),
+    )
+    default_base_work_days = models.PositiveSmallIntegerField(
+        default=6,
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
+    )
+    programming_interval_minutes = models.PositiveSmallIntegerField(
+        default=DEFAULT_PROGRAMMING_INTERVAL_MINUTES,
+        validators=[MinValueValidator(1), MaxValueValidator(240)],
     )
     night_shift_start = models.TimeField(default=time(19, 0))
 

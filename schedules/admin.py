@@ -20,9 +20,13 @@ class ScheduleLineInline(admin.TabularInline):
         "employee_name",
         "department_name",
         "job_role_name",
+        "base_work_days",
         "inventory_days_total",
         "inventory_days_summary",
         "total_hours",
+        "expected_weekly_hours",
+        "available_capacity_hours",
+        "validation_status",
         "overtime_hours",
         "night_bonus_hours",
         "special_days_generated",
@@ -53,9 +57,13 @@ class ScheduleLineAdmin(admin.ModelAdmin):
         "schedule",
         "department_name",
         "job_role_name",
+        "base_work_days",
         "inventory_days_total",
         "inventory_days_summary",
         "total_hours",
+        "expected_weekly_hours",
+        "available_capacity_hours",
+        "validation_status",
         "overtime_hours",
         "night_bonus_hours",
         "special_days_generated",
@@ -80,8 +88,12 @@ class ScheduleBalanceMovementAdmin(admin.ModelAdmin):
         "quantity_days",
         "quantity_hours",
         "equivalent_hours",
+        "balance_before_days",
+        "balance_after_days",
+        "is_reversal",
+        "is_reversed",
     )
-    list_filter = ("site", "movement_type")
+    list_filter = ("site", "movement_type", "is_reversal", "is_reversed")
     search_fields = ("employee_identifier", "employee_name", "job_role_name", "description")
 
 
