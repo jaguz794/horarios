@@ -320,9 +320,9 @@
                 data-prior-day-hours="{{ line_form.balance_snapshot.prior_day_equivalent_hours }}"
                 data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
               >
-                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h.
+                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h. Resultado estimado: {{ line_form.instance.accrued_day_balance|hours_int }} dia(s) y {{ line_form.instance.accrued_hour_balance|hours_int }} h.
               </small>
-              <small class="live-summary" data-live-summary></small>
+              <small class="live-summary" data-live-summary hidden></small>
               {% if line_form.non_field_errors %}
               <div class="row-errors">{{ line_form.non_field_errors }}</div>
               {% endif %}

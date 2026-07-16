@@ -747,10 +747,16 @@ function initScheduleCalculations() {
     const hourBalanceCell = row.querySelector("[data-hour-balance]");
     const summaryCell = row.querySelector("[data-live-summary]");
     const balanceNote = row.querySelector("[data-balance-note]");
+    const initialDayBalanceText = dayBalanceCell?.textContent || "";
+    const initialHourBalanceText = hourBalanceCell?.textContent || "";
+    const initialSummaryText = summaryCell?.textContent || "";
+    const initialSummaryHidden = summaryCell?.hidden ?? true;
+    const initialBalanceNoteText = balanceNote?.textContent || "";
     const manualDayAdjustmentInput = row.querySelector('input[name$="-manual_day_adjustment"]');
     const manualHourAdjustmentInput = row.querySelector('input[name$="-manual_hour_adjustment"]');
     const dayCells = row.querySelectorAll("[data-day-index]");
     const employeeName = row.querySelector(".schedule-cell-employee")?.textContent?.trim() || "Esta persona";
+    const rowHasServerErrors = Boolean(row.querySelector(".row-errors, .errorlist"));
 
     const confirmInventoryParticipation = (event) => {
       const checkbox = event.currentTarget;
@@ -966,7 +972,7 @@ function initScheduleCalculations() {
       return conciseMessages;
     };
 
-    const recalculateRow = () => {
+    const recalculateRow = ({ preservePersistedState = false } = {}) => {
       let totalHours = 0;
       let totalNightHours = 0;
       let daysOverLimit = 0;
@@ -1156,15 +1162,28 @@ function initScheduleCalculations() {
         nightCell.textContent = formatHours(totalNightHours);
       }
       if (dayBalanceCell) {
-        dayBalanceCell.textContent = formatBalanceHours(endingDayBalance);
-        dayBalanceCell.classList.toggle("metric-cell--negative", endingDayBalance < -0.001);
+        if (preservePersistedState) {
+          dayBalanceCell.textContent = initialDayBalanceText;
+          dayBalanceCell.classList.toggle("metric-cell--negative", parseDecimal(initialDayBalanceText) < -0.001);
+        } else {
+          dayBalanceCell.textContent = formatBalanceHours(endingDayBalance);
+          dayBalanceCell.classList.toggle("metric-cell--negative", endingDayBalance < -0.001);
+        }
       }
       if (hourBalanceCell) {
-        hourBalanceCell.textContent = formatBalanceHours(endingHourBalance);
+        hourBalanceCell.textContent = preservePersistedState
+          ? initialHourBalanceText
+          : formatBalanceHours(endingHourBalance);
         hourBalanceCell.classList.remove("metric-cell--negative");
       }
 
-      updateBalanceNote(endingDayBalance, endingHourBalance);
+      if (preservePersistedState) {
+        if (balanceNote) {
+          balanceNote.textContent = initialBalanceNoteText;
+        }
+      } else {
+        updateBalanceNote(endingDayBalance, endingHourBalance);
+      }
 
       const capacityHours = roundHours(expectedPlan.expectedWorkDays * effectiveDailyMax);
       const validationStatus =
@@ -1226,24 +1245,31 @@ function initScheduleCalculations() {
       });
 
       if (summaryCell) {
-        summaryCell.textContent = liveMessages.join(" ");
-        summaryCell.hidden = liveMessages.length === 0;
+        if (preservePersistedState) {
+          summaryCell.textContent = initialSummaryText;
+          summaryCell.hidden = initialSummaryHidden;
+        } else {
+          summaryCell.textContent = liveMessages.join(" ");
+          summaryCell.hidden = liveMessages.length === 0;
+        }
       }
     };
 
+    const recalculateDirtyRow = () => recalculateRow({ preservePersistedState: false });
+
     if (!scheduleClosed) {
       row.querySelectorAll("select").forEach((field) => {
-        field.addEventListener("change", recalculateRow);
+        field.addEventListener("change", recalculateDirtyRow);
       });
 
       row.querySelectorAll('input[name*="_compensation_hours"]').forEach((field) => {
-        field.addEventListener("input", recalculateRow);
-        field.addEventListener("change", recalculateRow);
+        field.addEventListener("input", recalculateDirtyRow);
+        field.addEventListener("change", recalculateDirtyRow);
       });
 
       [manualDayAdjustmentInput, manualHourAdjustmentInput].forEach((field) => {
-        field?.addEventListener("input", recalculateRow);
-        field?.addEventListener("change", recalculateRow);
+        field?.addEventListener("input", recalculateDirtyRow);
+        field?.addEventListener("change", recalculateDirtyRow);
       });
 
       row.querySelectorAll('[data-inventory-checkbox="true"]').forEach((field) => {
@@ -1251,7 +1277,7 @@ function initScheduleCalculations() {
       });
     }
 
-    recalculateRow();
+    recalculateRow({ preservePersistedState: !rowHasServerErrors });
   });
 
   const roleFilter = document.querySelector("[data-role-filter]");
