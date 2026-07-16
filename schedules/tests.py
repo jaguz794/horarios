@@ -1466,6 +1466,99 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.expected_weekly_hours, Decimal("43.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("1.00"))
 
+    def test_rebuild_reverses_legacy_duplicate_special_day_movements_without_idempotency_key(self):
+        self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
+        line = self.build_line(
+            week_start=date(2026, 7, 12),
+            employee_identifier="4303_DUP",
+            weekly_target_hours=Decimal("43.00"),
+            shift_map={
+                0: "08:00-15:00",
+                1: "08:00-16:00",
+                2: "descanso",
+                3: "08:00-15:00",
+                4: "08:00-15:00",
+                5: "08:00-15:00",
+                6: "08:00-16:00",
+            },
+            compensation_map={2: ScheduleLine.CompensationMode.PAY_DAY},
+            daily_max_hours=Decimal("9.00"),
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        sunday_movement = line.balance_movements.filter(
+            is_reversal=False,
+            is_reversed=False,
+            movement_type=ScheduleBalanceMovement.MovementType.SPECIAL_DAY,
+            movement_date=date(2026, 7, 12),
+        ).first()
+        holiday_movement = line.balance_movements.filter(
+            is_reversal=False,
+            is_reversed=False,
+            movement_type=ScheduleBalanceMovement.MovementType.SPECIAL_DAY,
+            movement_date=date(2026, 7, 13),
+        ).first()
+        self.assertIsNotNone(sunday_movement)
+        self.assertIsNotNone(holiday_movement)
+
+        for original in (sunday_movement, holiday_movement):
+            ScheduleBalanceMovement.objects.create(
+                schedule=line.schedule,
+                line=line,
+                site=line.schedule.site,
+                employee_identifier=line.employee_identifier,
+                employee_name=line.employee_name,
+                job_role_name=line.job_role_name,
+                movement_date=original.movement_date,
+                movement_type=original.movement_type,
+                quantity_days=original.quantity_days,
+                quantity_hours=original.quantity_hours,
+                equivalent_hours=original.equivalent_hours,
+                balance_before_days=original.balance_before_days,
+                balance_after_days=original.balance_after_days,
+                movement_origin="legacy",
+                idempotency_key="",
+                description=original.description,
+            )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        active_special_days = list(
+            line.balance_movements.filter(
+                is_reversal=False,
+                is_reversed=False,
+                movement_type=ScheduleBalanceMovement.MovementType.SPECIAL_DAY,
+            ).order_by("movement_date", "pk")
+        )
+        reversed_legacy = list(
+            line.balance_movements.filter(
+                movement_origin="legacy",
+                is_reversal=False,
+                is_reversed=True,
+            ).order_by("pk")
+        )
+        legacy_reversals = list(
+            line.balance_movements.filter(
+                is_reversal=True,
+                reversed_movement__in=reversed_legacy,
+            ).order_by("pk")
+        )
+
+        self.assertEqual(
+            [(movement.movement_date, movement.description) for movement in active_special_days],
+            [
+                (date(2026, 7, 12), "Domingo laborado"),
+                (date(2026, 7, 13), "Festivo laborado"),
+            ],
+        )
+        self.assertEqual(len(reversed_legacy), 2)
+        self.assertEqual(len(legacy_reversals), 2)
+        self.assertTrue(all(reversal.idempotency_key for reversal in legacy_reversals))
+        self.assertEqual(line.accrued_day_balance, Decimal("1.00"))
+
     def test_compensatory_days_reduce_expected_hours_proportionally(self):
         EmployeeInitialBalance.objects.create(
             employee_identifier="4203",

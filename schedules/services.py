@@ -2636,6 +2636,29 @@ def build_schedule_balance_movement_idempotency_key(
     return hashlib.sha1(raw_value.encode("utf-8")).hexdigest()
 
 
+def schedule_balance_movement_matches_payload(
+    movement: ScheduleBalanceMovement,
+    payload: dict[str, object],
+) -> bool:
+    return (
+        movement.movement_date == payload["movement_date"]
+        and movement.movement_type == payload["movement_type"]
+        and decimal_hours(movement.quantity_days) == decimal_hours(payload["quantity_days"])
+        and decimal_hours(movement.quantity_hours) == decimal_hours(payload["quantity_hours"])
+        and decimal_hours(movement.equivalent_hours) == decimal_hours(payload["equivalent_hours"])
+        and decimal_hours(movement.balance_before_days) == decimal_hours(payload["balance_before_days"])
+        and decimal_hours(movement.balance_after_days) == decimal_hours(payload["balance_after_days"])
+        and (movement.description or "") == str(payload["description"] or "")
+    )
+
+
+def build_schedule_balance_reversal_key(movement: ScheduleBalanceMovement) -> str:
+    base_key = str(movement.idempotency_key or "").strip()
+    if not base_key:
+        base_key = f"legacy:{movement.pk}:{movement.movement_type}:{movement.movement_date:%Y%m%d}"
+    return f"{base_key}:reversal"
+
+
 def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
     if not line.pk or not line.schedule_id:
         return
@@ -2790,32 +2813,33 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
         )
         active_payloads.append(payload)
 
-    existing_active_movements = {
-        movement.idempotency_key: movement
-        for movement in line.balance_movements.filter(is_reversal=False, is_reversed=False)
-    }
-    desired_keys = {str(payload["idempotency_key"]) for payload in active_payloads}
+    existing_active_movements = list(
+        line.balance_movements.filter(is_reversal=False, is_reversed=False).order_by("pk")
+    )
+    existing_active_by_key: dict[str, list[ScheduleBalanceMovement]] = {}
+    for movement in existing_active_movements:
+        movement_key = str(movement.idempotency_key or "").strip()
+        existing_active_by_key.setdefault(movement_key, []).append(movement)
     movements_to_create: list[ScheduleBalanceMovement] = []
     movements_to_reverse: list[ScheduleBalanceMovement] = []
     movements_to_mark_reversed: list[ScheduleBalanceMovement] = []
     recorded_by = line.schedule.updated_by or line.schedule.created_by
+    matched_existing_ids: set[int] = set()
 
     for payload in active_payloads:
         idempotency_key = str(payload["idempotency_key"])
-        existing = existing_active_movements.get(idempotency_key)
+        existing = next(
+            (
+                candidate
+                for candidate in existing_active_by_key.get(idempotency_key, [])
+                if candidate.pk not in matched_existing_ids
+                and schedule_balance_movement_matches_payload(candidate, payload)
+            ),
+            None,
+        )
         if existing is not None:
-            fields_match = (
-                existing.movement_date == payload["movement_date"]
-                and existing.movement_type == payload["movement_type"]
-                and decimal_hours(existing.quantity_days) == decimal_hours(payload["quantity_days"])
-                and decimal_hours(existing.quantity_hours) == decimal_hours(payload["quantity_hours"])
-                and decimal_hours(existing.equivalent_hours) == decimal_hours(payload["equivalent_hours"])
-                and decimal_hours(existing.balance_before_days) == decimal_hours(payload["balance_before_days"])
-                and decimal_hours(existing.balance_after_days) == decimal_hours(payload["balance_after_days"])
-                and (existing.description or "") == str(payload["description"] or "")
-            )
-            if fields_match:
-                continue
+            matched_existing_ids.add(existing.pk)
+            continue
 
         movements_to_create.append(
             ScheduleBalanceMovement(
@@ -2839,28 +2863,12 @@ def rebuild_schedule_line_movements(line: ScheduleLine) -> None:
             )
         )
 
-    for existing in existing_active_movements.values():
-        if existing.idempotency_key in desired_keys:
-            same_payload = next(
-                (payload for payload in active_payloads if str(payload["idempotency_key"]) == existing.idempotency_key),
-                None,
-            )
-            if same_payload is not None:
-                fields_match = (
-                    existing.movement_date == same_payload["movement_date"]
-                    and existing.movement_type == same_payload["movement_type"]
-                    and decimal_hours(existing.quantity_days) == decimal_hours(same_payload["quantity_days"])
-                    and decimal_hours(existing.quantity_hours) == decimal_hours(same_payload["quantity_hours"])
-                    and decimal_hours(existing.equivalent_hours) == decimal_hours(same_payload["equivalent_hours"])
-                    and decimal_hours(existing.balance_before_days) == decimal_hours(same_payload["balance_before_days"])
-                    and decimal_hours(existing.balance_after_days) == decimal_hours(same_payload["balance_after_days"])
-                    and (existing.description or "") == str(same_payload["description"] or "")
-                )
-                if fields_match:
-                    continue
+    for existing in existing_active_movements:
+        if existing.pk in matched_existing_ids:
+            continue
         if existing.is_reversed:
             continue
-        reversal_key = f"{existing.idempotency_key}:reversal"
+        reversal_key = build_schedule_balance_reversal_key(existing)
         if not line.balance_movements.filter(idempotency_key=reversal_key, is_reversal=True).exists():
             movements_to_reverse.append(
                 ScheduleBalanceMovement(
