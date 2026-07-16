@@ -225,6 +225,7 @@ function initScheduleCalculations() {
         isHoliday,
         isNonWorkedHoliday,
         isLeaveDay,
+        isMandatoryRestDay: dayState.dayIndex === mandatoryRestIndex,
         isAdditionalRestDay,
         expectedReason,
       };
@@ -459,6 +460,8 @@ function initScheduleCalculations() {
     const invalidPayHoursIndices = [];
     const invalidPayMoneyIndices = [];
     const invalidCompanyDayRepaymentIndices = [];
+    const invalidAdvanceDayIndices = [];
+    const invalidAutoRestDayIndices = [];
     let generatedSpecialDays = 0;
     let excludedCompanyDayHours = 0;
     const dayStates = {};
@@ -537,6 +540,7 @@ function initScheduleCalculations() {
             dayState.source = "signed_day_balance";
             dayState.appliedDayDelta = -1;
           } else {
+            invalidAdvanceDayIndices.push(entry.index);
             dayState.source = "day_limit";
             dayState.valid = false;
           }
@@ -548,6 +552,7 @@ function initScheduleCalculations() {
             dayState.source = "signed_day_balance";
             dayState.appliedDayDelta = -1;
           } else {
+            invalidAutoRestDayIndices.push(entry.index);
             dayState.source = "day_limit";
             dayState.valid = false;
           }
@@ -625,8 +630,9 @@ function initScheduleCalculations() {
       invalidPayMoneyIndices,
       invalidCompanyDayRepaymentIndices,
       invalidCompanyDayRepaymentReasons: repaymentPlan.invalidRepaymentReasons,
-      invalidAdvanceDayLimitIndices: [],
+      invalidAdvanceDayIndices,
       invalidAdvanceDayWithBalanceIndices: [],
+      invalidAutoRestDayIndices,
       generatedSpecialDays,
       excludedCompanyDayHours,
       generatedOvertimeHours: cumulativeOvertimeHours,

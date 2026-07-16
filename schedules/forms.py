@@ -33,6 +33,7 @@ from schedules.services import (
     get_selected_shift_templates,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
+    recalculate_schedule_line,
     resolve_compensation_usage,
     resolve_shift_metrics,
     schedule_accepts_blacklisted_staff,
@@ -412,6 +413,7 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             else None
         )
         self.balance_snapshot = balance_snapshot or get_schedule_line_balance_snapshot(self.instance, config=self.config)
+        self.set_display_metrics(self.instance)
 
         shift_1_choices = shift_choices or build_shift_choices(second_slot=False)
         shift_2_choices = secondary_shift_choices or build_shift_choices(second_slot=True)
@@ -507,6 +509,13 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         if readonly:
             for field in self.fields.values():
                 field.disabled = True
+
+    def set_display_metrics(self, line: ScheduleLine) -> None:
+        self.display_total_hours = line.total_hours
+        self.display_overtime_hours = line.overtime_hours
+        self.display_night_bonus_hours = line.night_bonus_hours
+        self.display_day_balance = line.accrued_day_balance
+        self.display_hour_balance = line.accrued_hour_balance
 
     def clean(self):
         cleaned_data = super().clean()
@@ -810,6 +819,12 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 f"La programacion actual genera {weekly_overtime_hours} h extra.",
             )
 
+        calculated_line = recalculate_schedule_line(working_line)
+        self.set_display_metrics(calculated_line)
+        self.compact_alert_summary = get_schedule_line_compact_alert_summary(
+            calculated_line,
+            balance_snapshot=self.balance_snapshot,
+        )
         return cleaned_data
 
 

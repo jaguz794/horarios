@@ -1280,6 +1280,17 @@ class ProportionalWeeklyBalanceTests(TestCase):
     def ensure_holiday(self, holiday_date: date, name: str = "Festivo prueba"):
         Holiday.objects.get_or_create(holiday_date=holiday_date, defaults={"name": name})
 
+    def build_form_data(self, **overrides):
+        data = {}
+        for index in range(7):
+            data[f"day_{index}_shift_1"] = ""
+            data[f"day_{index}_shift_2"] = ""
+            data[f"day_{index}_compensation_mode"] = ""
+            data[f"day_{index}_compensation_hours"] = ""
+
+        data.update(overrides)
+        return data
+
     def build_line(
         self,
         *,
@@ -1438,6 +1449,79 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.payment_days_used, 1)
         self.assertEqual(line.accrued_day_balance, Decimal("2.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("1.00"))
+
+    def test_bound_form_display_metrics_use_recalculated_positive_starting_balance(self):
+        self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
+        schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 7, 12),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="4304",
+            employee_name="Empleado 4304",
+            initial_day_balance=Decimal("1.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=schedule,
+            employee_identifier="4304",
+            employee_name="Empleado 4304",
+            weekly_target_hours=Decimal("43.00"),
+            daily_max_hours=Decimal("9.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="08:00-15:00",
+                day_1_shift_1="08:00-16:00",
+                day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+                day_3_shift_1="08:00-15:00",
+                day_4_shift_1="08:00-15:00",
+                day_5_shift_1="08:00-15:00",
+                day_6_shift_1="08:00-16:00",
+            ),
+            instance=line,
+            schedule=schedule,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.balance_snapshot["prior_day_balance"], Decimal("1.00"))
+        self.assertEqual(form.display_day_balance, Decimal("2.00"))
+        self.assertEqual(form.display_hour_balance, Decimal("1.00"))
+        self.assertIn("Resultado estimado: 2 dia(s) a favor del trabajador", form.compact_alert_summary)
+
+    def test_bound_form_display_metrics_show_one_day_when_no_historical_balance_exists(self):
+        self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
+        schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 7, 12),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        line = ScheduleLine.objects.create(
+            schedule=schedule,
+            employee_identifier="4305",
+            employee_name="Empleado 4305",
+            weekly_target_hours=Decimal("43.00"),
+            daily_max_hours=Decimal("9.00"),
+        )
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="08:00-15:00",
+                day_1_shift_1="08:00-16:00",
+                day_2_compensation_mode=ScheduleLine.CompensationMode.PAY_DAY,
+                day_3_shift_1="08:00-15:00",
+                day_4_shift_1="08:00-15:00",
+                day_5_shift_1="08:00-15:00",
+                day_6_shift_1="08:00-16:00",
+            ),
+            instance=line,
+            schedule=schedule,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.balance_snapshot["prior_day_balance"], Decimal("0.00"))
+        self.assertEqual(form.display_day_balance, Decimal("1.00"))
+        self.assertEqual(form.display_hour_balance, Decimal("1.00"))
+        self.assertIn("Resultado estimado: 1 dia(s) a favor del trabajador", form.compact_alert_summary)
 
     def test_shifted_weekly_rest_without_pay_day_keeps_both_generated_days(self):
         self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")

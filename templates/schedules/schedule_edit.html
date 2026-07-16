@@ -290,13 +290,13 @@
             </td>
             {% endwith %}
             {% endfor %}
-            <td class="metric-cell" data-total-hours>{{ line_form.instance.total_hours|hours_int }}</td>
-            <td class="metric-cell" data-overtime-hours>{{ line_form.instance.overtime_hours|hours_int }}</td>
+            <td class="metric-cell" data-total-hours>{{ line_form.display_total_hours|hours_int }}</td>
+            <td class="metric-cell" data-overtime-hours>{{ line_form.display_overtime_hours|hours_int }}</td>
             {% if show_night_hours %}
-            <td class="metric-cell" data-night-hours>{{ line_form.instance.night_bonus_hours|hours_int }}</td>
+            <td class="metric-cell" data-night-hours>{{ line_form.display_night_bonus_hours|hours_int }}</td>
             {% endif %}
-            <td class="metric-cell" data-day-balance>{{ line_form.instance.accrued_day_balance|hours_int }}</td>
-            <td class="metric-cell" data-hour-balance>{{ line_form.instance.accrued_hour_balance|hours_int }}</td>
+            <td class="metric-cell" data-day-balance>{{ line_form.display_day_balance|hours_int }}</td>
+            <td class="metric-cell" data-hour-balance>{{ line_form.display_hour_balance|hours_int }}</td>
             {% if show_admin_balance_controls %}
             <td>
               <div class="pending-cell pending-cell--compact pending-cell--days">
@@ -320,7 +320,7 @@
                 data-prior-day-hours="{{ line_form.balance_snapshot.prior_day_equivalent_hours }}"
                 data-day-reference-hours="{{ line_form.balance_snapshot.day_reference_hours }}"
               >
-                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h. Resultado estimado: {{ line_form.instance.accrued_day_balance|hours_int }} dia(s) y {{ line_form.instance.accrued_hour_balance|hours_int }} h.
+                Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h. Resultado estimado: {{ line_form.display_day_balance|hours_int }} dia(s) y {{ line_form.display_hour_balance|hours_int }} h.
               </small>
               <small class="live-summary" data-live-summary hidden></small>
               {% if line_form.non_field_errors %}
