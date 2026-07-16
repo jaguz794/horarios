@@ -1,7 +1,9 @@
+import logging
+
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, ProgrammingError, transaction
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
@@ -36,11 +38,14 @@ from schedules.services import (
     import_schedule_flat_file,
     is_employee_blacklisted,
     purge_blacklisted_lines_from_schedule,
+    recalculate_schedule_line,
     rebuild_balances_for_employees_from_week,
     schedule_accepts_blacklisted_staff,
     save_schedule_line_with_balances,
     sync_schedule_from_legacy,
 )
+
+logger = logging.getLogger(__name__)
 from schedules.settlement_pdf import generate_and_store_schedule_settlement
 from legacy.services import (
     LegacyStaffAmbiguousMatchError,
@@ -374,6 +379,29 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
         )
 
         if schedule_form.is_valid() and line_formset.is_valid():
+            preview_lines = [recalculate_schedule_line(form.save(commit=False)) for form in line_formset.forms]
+            target_status = schedule_form.cleaned_data.get("status")
+            blocking_statuses = {
+                ScheduleLine.ValidationStatus.INCOMPLETE,
+                ScheduleLine.ValidationStatus.IMPOSSIBLE,
+                ScheduleLine.ValidationStatus.INCONSISTENT,
+            }
+            if target_status in {WeeklySchedule.Status.REVIEW, WeeklySchedule.Status.PUBLISHED} and any(
+                preview_line.validation_status in blocking_statuses
+                for preview_line in preview_lines
+            ):
+                messages.error(
+                    request,
+                    "No puedes pasar el horario a revision o publicado mientras existan lineas "
+                    "incompletas, imposibles por capacidad o inconsistentes.",
+                )
+                return self.render_to_response(
+                    self.build_context(
+                        schedule,
+                        schedule_form=schedule_form,
+                        line_formset=line_formset,
+                    )
+                )
             touched_employee_ids = sorted(
                 {
                     (form.instance.employee_identifier or "").strip()
@@ -597,6 +625,36 @@ class ScheduleFlatFileUploadView(LoginRequiredMixin, View):
                 )
             except ValueError as exc:
                 messages.error(request, str(exc))
+            except ProgrammingError:
+                logger.exception(
+                    "No fue posible cargar el archivo plano del horario %s porque la base de datos esta desactualizada.",
+                    schedule.pk,
+                )
+                messages.error(
+                    request,
+                    "La base de datos del portal no esta actualizada con esta version del codigo. "
+                    "Ejecuta las migraciones pendientes (`python manage.py migrate`) y vuelve a intentar.",
+                )
+            except IntegrityError:
+                logger.exception(
+                    "No fue posible cargar el archivo plano del horario %s por una inconsistencia de datos.",
+                    schedule.pk,
+                )
+                messages.error(
+                    request,
+                    "El archivo plano no pudo guardarse por una inconsistencia interna de datos. "
+                    "Actualiza el codigo del portal y vuelve a intentar. Si persiste, revisa los logs del servidor.",
+                )
+            except Exception:
+                logger.exception(
+                    "Ocurrio un error inesperado al cargar el archivo plano del horario %s.",
+                    schedule.pk,
+                )
+                messages.error(
+                    request,
+                    "No fue posible cargar el archivo plano del horario por un error inesperado. "
+                    "Revisa los logs del servidor y vuelve a intentarlo.",
+                )
             else:
                 messages.success(
                     request,
