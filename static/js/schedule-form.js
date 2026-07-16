@@ -64,6 +64,17 @@ function initScheduleCalculations() {
     return "Sin dias pendientes";
   };
 
+  const describeWeeklyDifference = (value) => {
+    const rounded = roundHours(value);
+    if (rounded > 0.001) {
+      return `${formatHours(rounded, true)} de excedente`;
+    }
+    if (rounded < -0.001) {
+      return `${formatHours(Math.abs(rounded), true)} pendientes`;
+    }
+    return "sin diferencia horaria";
+  };
+
   const toMinutes = (timeValue) => {
     const [hours, minutes] = timeValue.split(":").map((item) => Number.parseInt(item, 10));
     return hours * 60 + minutes;
@@ -264,7 +275,25 @@ function initScheduleCalculations() {
     if (dayState.modeValue === "pay_day" || advanceDayModes.has(dayState.modeValue)) {
       return false;
     }
-    const threshold = Math.max(roundHours(dayState.expectedHours || 0), roundHours(dayReferenceValue || 0));
+    const expectedHours = roundHours(dayState.expectedHours || 0);
+    const configuredDayHours = roundHours(dayState.dailyTargetHours || 0);
+    let referenceHours = Math.max(expectedHours, roundHours(dayReferenceValue || 0));
+    if (configuredDayHours > 0.001) {
+      referenceHours = Math.min(referenceHours > 0.001 ? referenceHours : configuredDayHours, configuredDayHours);
+    }
+    if (referenceHours <= 0.001) {
+      return false;
+    }
+    const referenceMinutes = hoursToMinutes(referenceHours);
+    const wholeHours = Math.floor(referenceMinutes / 60);
+    const fractionalMinutes = referenceMinutes - (wholeHours * 60);
+    let thresholdMinutes = wholeHours * 60;
+    if (fractionalMinutes === 30) {
+      thresholdMinutes = referenceMinutes;
+    } else if (thresholdMinutes <= 0) {
+      thresholdMinutes = referenceMinutes;
+    }
+    const threshold = minutesToHours(thresholdMinutes);
     return threshold > 0.001 && workedHours + 0.001 >= threshold;
   };
 
@@ -821,6 +850,20 @@ function initScheduleCalculations() {
 
   const buildLiveSummary = (summaryState) => {
       const liveMessages = [];
+      liveMessages.push(`Resultado estimado: ${describeDayBalance(summaryState.endingDayBalance)} y ${describeWeeklyDifference(summaryState.weeklyHourDifference)}.`);
+      if (summaryState.generatedSundayDays > 0 || summaryState.generatedHolidayDays > 0 || summaryState.paidDays > 0) {
+        const movementMessages = [];
+        if (summaryState.generatedSundayDays > 0) {
+          movementMessages.push(`${summaryState.generatedSundayDays} dia(s) generado(s) por domingo trabajado`);
+        }
+        if (summaryState.generatedHolidayDays > 0) {
+          movementMessages.push(`${summaryState.generatedHolidayDays} dia(s) generado(s) por festivo trabajado`);
+        }
+        if (summaryState.paidDays > 0) {
+          movementMessages.push(`${summaryState.paidDays} dia(s) consumido(s) mediante Pago dia`);
+        }
+        liveMessages.push(`Movimientos: ${movementMessages.join("; ")}.`);
+      }
       liveMessages.push(`Estado: ${summaryState.validationStatus}.`);
       liveMessages.push(`Jornada ajustada: ${formatHours(summaryState.expectedWeeklyHours, true)}. Programadas: ${formatHours(summaryState.totalHours, true)}. Diferencia: ${formatHours(summaryState.weeklyHourDifference, true)}.`);
       if (summaryState.roundingAdjustmentMinutes !== 0) {
@@ -1086,6 +1129,22 @@ function initScheduleCalculations() {
           paymentState: paymentUsage.dayStates[dayState.dayIndex],
         });
       });
+      let generatedSundayDays = 0;
+      let generatedHolidayDays = 0;
+      let paidDays = 0;
+      dayStates.forEach((dayState) => {
+        const paymentState = paymentUsage.dayStates[dayState.dayIndex] || {};
+        if (paymentState.generatedDay && dayState.specialDayLabel) {
+          if (dayState.dayIndex === 0) {
+            generatedSundayDays += 1;
+          } else if (dayState.isHoliday) {
+            generatedHolidayDays += 1;
+          }
+        }
+        if (dayState.modeValue === "pay_day" && roundHours(paymentState.appliedDayDelta || 0) < -0.001) {
+          paidDays += 1;
+        }
+      });
 
       if (totalCell) {
         totalCell.textContent = formatHours(totalHours);
@@ -1161,6 +1220,9 @@ function initScheduleCalculations() {
         manualHourAdjustment,
         endingDayBalance,
         endingHourBalance,
+        generatedSundayDays,
+        generatedHolidayDays,
+        paidDays,
       });
 
       if (summaryCell) {

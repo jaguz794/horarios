@@ -202,6 +202,51 @@ def get_schedule_balance_movement_label(movement_type: str) -> str:
     return SCHEDULE_BALANCE_MOVEMENT_LABELS.get(str(movement_type or "").strip(), str(movement_type or "").strip())
 
 
+def format_weekly_difference_compact(difference_hours: Decimal) -> str:
+    normalized = decimal_hours(difference_hours)
+    if normalized > Decimal("0.00"):
+        return f"{normalized} h de excedente"
+    if normalized < Decimal("0.00"):
+        return f"{abs(normalized)} h pendientes"
+    return "sin diferencia horaria"
+
+
+def summarize_schedule_day_movements(
+    day_breakdown: list[dict[str, Decimal | date | str | int]],
+    day_states: dict[int, dict[str, Decimal | str | bool]],
+) -> dict[str, int]:
+    summary = {
+        "generated_sunday_days": 0,
+        "generated_holiday_days": 0,
+        "paid_days": 0,
+        "advance_days": 0,
+        "additional_rest_days": 0,
+        "company_day_repayments": 0,
+    }
+    for day_info in day_breakdown:
+        index = int(day_info["index"])
+        day_date = day_info["date"]
+        special_label = str(day_info.get("special_label") or "")
+        day_state = day_states.get(index, {})
+        if bool(day_state.get("generated_day")) and special_label:
+            if getattr(day_date, "weekday", lambda: -1)() == 6:
+                summary["generated_sunday_days"] += 1
+            else:
+                summary["generated_holiday_days"] += 1
+
+        movement_type = str(day_state.get("day_movement_type") or "")
+        applied_day_delta = decimal_hours(day_state.get("applied_day_delta", Decimal("0.00")) or "0")
+        if movement_type == ScheduleBalanceMovement.MovementType.PAY_DAY and applied_day_delta < Decimal("0.00"):
+            summary["paid_days"] += 1
+        elif movement_type == ScheduleBalanceMovement.MovementType.ADVANCE_DAY and applied_day_delta < Decimal("0.00"):
+            summary["advance_days"] += 1
+        elif movement_type == ScheduleBalanceMovement.MovementType.ADDITIONAL_REST and applied_day_delta < Decimal("0.00"):
+            summary["additional_rest_days"] += 1
+        elif movement_type == COMPANY_DAY_REPAYMENT_MOVEMENT and applied_day_delta > Decimal("0.00"):
+            summary["company_day_repayments"] += 1
+    return summary
+
+
 def normalize_full_day_threshold(
     worked_hours: Decimal,
     reference_hours: Decimal,
@@ -211,6 +256,34 @@ def normalize_full_day_threshold(
     if normalized_reference_hours <= Decimal("0.00"):
         return normalized_worked_hours
     return max(normalized_worked_hours, normalized_reference_hours)
+
+
+def get_complete_work_day_threshold_hours(
+    entry: dict[str, Decimal | int | str | bool],
+    *,
+    day_reference_hours: Decimal,
+) -> Decimal:
+    expected_hours = decimal_hours(entry.get("expected_hours", Decimal("0.00")) or "0")
+    configured_day_hours = decimal_hours(entry.get("daily_target_hours", Decimal("0.00")) or "0")
+    reference_hours = max(expected_hours, decimal_hours(day_reference_hours))
+    if configured_day_hours > Decimal("0.00"):
+        reference_hours = min(reference_hours if reference_hours > Decimal("0.00") else configured_day_hours, configured_day_hours)
+    if reference_hours <= Decimal("0.00"):
+        return Decimal("0.00")
+
+    reference_minutes = decimal_hours_to_exact_minutes(reference_hours)
+    whole_hours = (reference_minutes / Decimal("60")).to_integral_value(rounding=ROUND_FLOOR)
+    fractional_minutes = reference_minutes - (whole_hours * Decimal("60"))
+    if fractional_minutes == Decimal("30"):
+        threshold_minutes = reference_minutes
+    elif fractional_minutes == Decimal("0"):
+        threshold_minutes = whole_hours * Decimal("60")
+    else:
+        threshold_minutes = whole_hours * Decimal("60")
+
+    if threshold_minutes <= Decimal("0"):
+        threshold_minutes = reference_minutes
+    return minutes_to_decimal_hours(threshold_minutes).quantize(TWO_DECIMALS)
 
 
 def is_complete_work_day_entry(
@@ -231,8 +304,10 @@ def is_complete_work_day_entry(
     }:
         return False
 
-    expected_hours = decimal_hours(entry.get("expected_hours", Decimal("0.00")) or "0")
-    full_day_threshold = max(expected_hours, decimal_hours(day_reference_hours))
+    full_day_threshold = get_complete_work_day_threshold_hours(
+        entry,
+        day_reference_hours=day_reference_hours,
+    )
     if full_day_threshold <= Decimal("0.00"):
         return False
     return worked_hours >= full_day_threshold
@@ -2089,6 +2164,7 @@ def get_schedule_line_compact_alert_summary(
         excluded_compensation_hours=decimal_hours(payment_resolution["excluded_company_day_hours"]),
         config=config,
     )
+    movement_summary = summarize_schedule_day_movements(day_breakdown, payment_resolution["day_states"])
     categories: list[str] = []
     daily_limit = line.daily_max_hours or config.default_daily_max_hours
     overtime_restriction = get_active_overtime_restriction(line.employee_identifier)
@@ -2137,10 +2213,45 @@ def get_schedule_line_compact_alert_summary(
         categories.append("jornada semanal")
 
     if not categories:
-        return "Sin alertas"
+        categories_text = "Sin alertas"
+    else:
+        unique_categories = list(dict.fromkeys(categories))
+        categories_text = f"Revisa {', '.join(unique_categories)}."
 
-    unique_categories = list(dict.fromkeys(categories))
-    return f"Revisa {', '.join(unique_categories)}."
+    movement_notes: list[str] = []
+    if movement_summary["generated_sunday_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['generated_sunday_days']} dia(s) generado(s) por domingo trabajado"
+        )
+    if movement_summary["generated_holiday_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['generated_holiday_days']} dia(s) generado(s) por festivo trabajado"
+        )
+    if movement_summary["paid_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['paid_days']} dia(s) consumido(s) mediante Pago dia"
+        )
+    if movement_summary["advance_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['advance_days']} dia(s) registrado(s) como descanso adelantado"
+        )
+    if movement_summary["company_day_repayments"] > 0:
+        movement_notes.append(
+            f"{movement_summary['company_day_repayments']} dia(s) compensado(s) a favor de la empresa"
+        )
+
+    summary_parts = [
+        (
+            "Resultado estimado: "
+            f"{format_signed_day_balance(decimal_hours(payment_resolution['remaining_day_balance']))} "
+            f"y {format_weekly_difference_compact(validation_metrics['difference_hours'])}."
+        )
+    ]
+    if movement_notes:
+        summary_parts.append(f"Movimientos: {'; '.join(movement_notes)}.")
+    if categories_text != "Sin alertas":
+        summary_parts.append(categories_text)
+    return " ".join(summary_parts)
 
 
 def build_schedule_validation_metrics(
@@ -2341,6 +2452,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         excluded_compensation_hours=decimal_hours(payment_resolution["excluded_company_day_hours"]),
         config=config,
     )
+    movement_summary = summarize_schedule_day_movements(day_breakdown, payment_resolution["day_states"])
     line.weekly_hour_difference = decimal_hours(validation_metrics["difference_hours"])
     line.overtime_hours = decimal_hours(payment_resolution["generated_overtime_hours"])
     line.special_days_generated = int(payment_resolution["generated_special_days"])
@@ -2456,6 +2568,29 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         summary_parts.append(
             f"Dias compensados a favor de la empresa: {int(payment_resolution['company_day_repayments_used'])}."
         )
+    movement_notes: list[str] = []
+    if movement_summary["generated_sunday_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['generated_sunday_days']} dia(s) generado(s) por domingo trabajado"
+        )
+    if movement_summary["generated_holiday_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['generated_holiday_days']} dia(s) generado(s) por festivo trabajado"
+        )
+    if movement_summary["paid_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['paid_days']} dia(s) consumido(s) mediante Pago dia"
+        )
+    if movement_summary["advance_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['advance_days']} dia(s) registrado(s) como descanso adelantado"
+        )
+    if movement_summary["company_day_repayments"] > 0:
+        movement_notes.append(
+            f"{movement_summary['company_day_repayments']} dia(s) compensado(s) a favor de la empresa"
+        )
+    if movement_notes:
+        summary_parts.append(f"Movimientos: {'; '.join(movement_notes)}.")
     automatic_repayment_indexes = [int(index) for index in payment_resolution.get("automatic_repayment_indexes", [])]
     if automatic_repayment_indexes:
         automatic_labels = ", ".join(

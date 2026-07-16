@@ -441,7 +441,8 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 payment_choices_render.append((ScheduleLine.CompensationMode.PAY_MONEY, "Pago dinero horas (anterior)"))
         if ScheduleLine.CompensationMode.ADVANCE_DAY in selected_compensation_modes:
             payment_choices_render.append((ScheduleLine.CompensationMode.ADVANCE_DAY, "Descanso adelantado"))
-        payment_choices_render.append((COMPANY_DAY_REPAYMENT_MODE, COMPANY_DAY_REPAYMENT_LABEL))
+        if COMPANY_DAY_REPAYMENT_MODE in selected_compensation_modes:
+            payment_choices_render.append((COMPANY_DAY_REPAYMENT_MODE, COMPANY_DAY_REPAYMENT_LABEL))
         deduped_payment_choices: list[tuple[str, str]] = []
         seen_payment_values: set[str] = set()
         for value, label in payment_choices_render:
