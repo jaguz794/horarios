@@ -753,6 +753,7 @@ function initScheduleCalculations() {
     const hourBalanceCell = row.querySelector("[data-hour-balance]");
     const summaryCell = row.querySelector("[data-live-summary]");
     const balanceNote = row.querySelector("[data-balance-note]");
+    const persistedSummary = row.querySelector("[data-persisted-summary]");
     const initialDayBalanceText = dayBalanceCell?.textContent || "";
     const initialHourBalanceText = hourBalanceCell?.textContent || "";
     const initialSummaryText = summaryCell?.textContent || "";
@@ -792,6 +793,18 @@ function initScheduleCalculations() {
         } else {
           paymentInfo.textContent = "Pago dia: no puede dejar a la persona con mas de 2 dias a favor de la empresa.";
         }
+        return;
+      }
+
+      if (!modeValue && state.paymentState?.source === "signed_day_balance") {
+        paymentInfo.hidden = false;
+        paymentInfo.textContent = `Descanso adicional: descuenta 1 dia automaticamente. Resultado estimado: ${describeDayBalance(state.paymentState.remainingDayBalance)}.`;
+        return;
+      }
+
+      if (!modeValue && state.isMandatoryRestDay && state.dailyHours <= 0.001) {
+        paymentInfo.hidden = false;
+        paymentInfo.textContent = "Descanso obligatorio: no cambia el saldo de dias.";
         return;
       }
 
@@ -1139,6 +1152,7 @@ function initScheduleCalculations() {
           endingDayBalance,
           endingHourBalance,
           paymentState: paymentUsage.dayStates[dayState.dayIndex],
+          isMandatoryRestDay: dayState.isMandatoryRestDay,
         });
       });
       let generatedSundayDays = 0;
@@ -1259,13 +1273,49 @@ function initScheduleCalculations() {
           summaryCell.hidden = liveMessages.length === 0;
         }
       }
+      if (persistedSummary) {
+        persistedSummary.hidden = !preservePersistedState;
+      }
     };
 
     const recalculateDirtyRow = () => recalculateRow({ preservePersistedState: false });
 
     if (!scheduleClosed) {
       row.querySelectorAll("select").forEach((field) => {
-        field.addEventListener("change", recalculateDirtyRow);
+        field.addEventListener("change", (event) => {
+          const changedField = event.currentTarget;
+          if (changedField.name.includes("_shift_")) {
+            const dayCell = changedField.closest("[data-day-index]");
+            const dayIndex = dayCell?.dataset.dayIndex;
+            const shift1Select = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_shift_1"]`);
+            const shift2Select = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_shift_2"]`);
+            const compensationMode = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_compensation_mode"]`);
+            const compensationHours = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_compensation_hours"]`);
+            const workedHours = roundHours(
+              getShiftMetrics(shift1Select?.value || "").hours
+              + getShiftMetrics(shift2Select?.value || "").hours,
+            );
+
+            if (
+              workedHours > 0.001
+              && (compensationMode?.value === "pay_day" || advanceDayModes.has(compensationMode?.value))
+            ) {
+              compensationMode.value = "";
+              if (compensationHours) {
+                compensationHours.value = "";
+              }
+            }
+          }
+          recalculateDirtyRow();
+        });
       });
 
       row.querySelectorAll('input[name*="_compensation_hours"]').forEach((field) => {

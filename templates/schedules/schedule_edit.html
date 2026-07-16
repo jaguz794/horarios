@@ -327,7 +327,7 @@
               <div class="row-errors">{{ line_form.non_field_errors }}</div>
               {% endif %}
               {% if line_form.instance.validation_summary %}
-              <small>
+              <small data-persisted-summary>
                 {% if show_detailed_alerts %}
                 {{ line_form.instance.validation_summary }}
                 {% else %}

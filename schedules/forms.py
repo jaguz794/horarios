@@ -418,8 +418,8 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         shift_1_choices = shift_choices or build_shift_choices(second_slot=False)
         shift_2_choices = secondary_shift_choices or build_shift_choices(second_slot=True)
         payment_choices_render = [
-            (ScheduleLine.CompensationMode.NONE, "Sin pago"),
-            (ScheduleLine.CompensationMode.PAY_DAY, "Pago dia"),
+            (ScheduleLine.CompensationMode.NONE, "Calculo automatico"),
+            (ScheduleLine.CompensationMode.PAY_DAY, "Pago dia (-1 dia)"),
             (ScheduleLine.CompensationMode.PAY_HOURS, "Pago horas"),
         ]
         selected_compensation_modes = {
