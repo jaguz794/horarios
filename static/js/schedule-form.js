@@ -263,7 +263,7 @@ function initScheduleCalculations() {
   };
 
   const isCompleteWorkDay = (dayState, dayReferenceValue) => {
-    const workedHours = roundHours(dayState.dailyHours);
+    const workedHours = roundHours(dayState.dailyHours ?? dayState.workedHours ?? 0);
     if (workedHours <= 0.001) {
       return false;
     }
@@ -273,7 +273,8 @@ function initScheduleCalculations() {
     if (dayState.isLeaveDay || dayState.isNonWorkedHoliday) {
       return false;
     }
-    if (dayState.modeValue === "pay_day" || advanceDayModes.has(dayState.modeValue)) {
+    const modeValue = dayState.modeValue ?? dayState.mode ?? "";
+    if (modeValue === "pay_day" || advanceDayModes.has(modeValue)) {
       return false;
     }
     const expectedHours = roundHours(dayState.expectedHours || 0);
@@ -753,6 +754,7 @@ function initScheduleCalculations() {
     const hourBalanceCell = row.querySelector("[data-hour-balance]");
     const summaryCell = row.querySelector("[data-live-summary]");
     const balanceNote = row.querySelector("[data-balance-note]");
+    const persistedSummary = row.querySelector("[data-persisted-summary]");
     const initialDayBalanceText = dayBalanceCell?.textContent || "";
     const initialHourBalanceText = hourBalanceCell?.textContent || "";
     const initialSummaryText = summaryCell?.textContent || "";
@@ -1104,9 +1106,12 @@ function initScheduleCalculations() {
           workedHours: dayState.dailyHours,
           dailyTargetHours: effectiveDailyMax,
           expectedHours: dayState.expectedHours,
+          expectedReason: dayState.expectedReason,
           specialGenerated: dayState.specialGenerated,
           isMandatoryRestDay: dayState.isMandatoryRestDay,
           isHoliday: dayState.isHoliday,
+          isNonWorkedHoliday: dayState.isNonWorkedHoliday,
+          isLeaveDay: dayState.isLeaveDay,
           isAdditionalRestDay: dayState.isAdditionalRestDay,
         })),
         priorDayBalance + manualDayAdjustment,
@@ -1259,13 +1264,49 @@ function initScheduleCalculations() {
           summaryCell.hidden = liveMessages.length === 0;
         }
       }
+      if (persistedSummary) {
+        persistedSummary.hidden = !preservePersistedState;
+      }
     };
 
     const recalculateDirtyRow = () => recalculateRow({ preservePersistedState: false });
 
     if (!scheduleClosed) {
       row.querySelectorAll("select").forEach((field) => {
-        field.addEventListener("change", recalculateDirtyRow);
+        field.addEventListener("change", (event) => {
+          const changedField = event.currentTarget;
+          if (changedField.name.includes("_shift_")) {
+            const dayCell = changedField.closest("[data-day-index]");
+            const dayIndex = dayCell?.dataset.dayIndex;
+            const shift1Select = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_shift_1"]`);
+            const shift2Select = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_shift_2"]`);
+            const compensationMode = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_compensation_mode"]`);
+            const compensationHours = dayIndex === undefined
+              ? null
+              : row.querySelector(`[name$="-day_${dayIndex}_compensation_hours"]`);
+            const workedHours = roundHours(
+              getShiftMetrics(shift1Select?.value || "").hours
+              + getShiftMetrics(shift2Select?.value || "").hours,
+            );
+
+            if (
+              workedHours > 0.001
+              && (compensationMode?.value === "pay_day" || advanceDayModes.has(compensationMode?.value))
+            ) {
+              compensationMode.value = "";
+              if (compensationHours) {
+                compensationHours.value = "";
+              }
+            }
+          }
+          recalculateDirtyRow();
+        });
       });
 
       row.querySelectorAll('input[name*="_compensation_hours"]').forEach((field) => {
