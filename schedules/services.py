@@ -2932,6 +2932,16 @@ def rebuild_balances_for_employee_from_earliest_schedule(employee_identifier: st
     return True
 
 
+def release_schedule_balance_reversal_links(schedule: WeeklySchedule) -> int:
+    movement_ids = list(schedule.balance_movements.values_list("pk", flat=True))
+    if not movement_ids:
+        return 0
+
+    return ScheduleBalanceMovement.objects.filter(
+        reversed_movement_id__in=movement_ids,
+    ).update(reversed_movement=None)
+
+
 def rebuild_balances_for_employees_from_week(
     week_start_date: date,
     employee_identifiers: list[str] | set[str] | tuple[str, ...] | None = None,

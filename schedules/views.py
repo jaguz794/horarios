@@ -40,6 +40,7 @@ from schedules.services import (
     purge_blacklisted_lines_from_schedule,
     recalculate_schedule_line,
     rebuild_balances_for_employees_from_week,
+    release_schedule_balance_reversal_links,
     schedule_accepts_blacklisted_staff,
     save_schedule_line_with_balances,
     sync_schedule_from_legacy,
@@ -567,6 +568,7 @@ class ScheduleDeleteView(LoginRequiredMixin, View):
             }
         )
         with transaction.atomic():
+            release_schedule_balance_reversal_links(schedule)
             schedule.delete()
             if affected_employee_ids:
                 rebuild_balances_for_employees_from_week(week_start, affected_employee_ids)

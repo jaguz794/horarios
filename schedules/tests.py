@@ -2805,6 +2805,77 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(future_line.accrued_day_balance, Decimal("4.00"))
         self.assertFalse(ScheduleLine.objects.filter(pk=line.pk).exists())
 
+    def test_admin_delete_schedule_with_reversal_movements_rebuilds_future_balance(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="7003",
+            employee_name="Empleado Con Reversos",
+            initial_day_balance=Decimal("0.00"),
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="7003",
+            employee_name="Empleado Con Reversos",
+            daily_max_hours=Decimal("8.00"),
+            accrued_day_balance=Decimal("1.00"),
+        )
+        original_movement = ScheduleBalanceMovement.objects.create(
+            schedule=self.schedule,
+            line=line,
+            site=self.site,
+            employee_identifier="7003",
+            employee_name="Empleado Con Reversos",
+            movement_date=self.schedule.week_start_date,
+            movement_type=ScheduleBalanceMovement.MovementType.SPECIAL_DAY,
+            quantity_days=Decimal("1.00"),
+            balance_before_days=Decimal("0.00"),
+            balance_after_days=Decimal("1.00"),
+            idempotency_key="delete-reversal-original",
+            description="Domingo laborado",
+        )
+        ScheduleBalanceMovement.objects.create(
+            schedule=self.schedule,
+            line=line,
+            site=self.site,
+            employee_identifier="7003",
+            employee_name="Empleado Con Reversos",
+            movement_date=self.schedule.week_end_date,
+            movement_type=ScheduleBalanceMovement.MovementType.REVERSAL,
+            quantity_days=Decimal("-1.00"),
+            balance_before_days=Decimal("1.00"),
+            balance_after_days=Decimal("0.00"),
+            idempotency_key="delete-reversal-original:reversal",
+            is_reversal=True,
+            reversed_movement=original_movement,
+            description="Reverso de domingo o festivo laborado",
+        )
+        future_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 6, 14),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        future_line = ScheduleLine.objects.create(
+            schedule=future_schedule,
+            employee_identifier="7003",
+            employee_name="Empleado Con Reversos",
+            daily_max_hours=Decimal("8.00"),
+        )
+        rebuild_balances_for_employees_from_week(future_schedule.week_start_date, ["7003"])
+        future_line.refresh_from_db()
+        self.assertEqual(future_line.accrued_day_balance, Decimal("1.00"))
+
+        self.client.login(username="admin_delete", password="secret")
+        response = self.client.post(
+            reverse("schedules:delete", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(WeeklySchedule.objects.filter(pk=self.schedule.pk).exists())
+        self.assertFalse(ScheduleBalanceMovement.objects.filter(schedule=self.schedule).exists())
+        future_line.refresh_from_db()
+        self.assertEqual(future_line.accrued_day_balance, Decimal("0.00"))
+
     def test_admin_sees_delete_action(self):
         self.client.login(username="admin_delete", password="secret")
 
