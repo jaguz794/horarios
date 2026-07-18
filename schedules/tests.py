@@ -3943,6 +3943,74 @@ class ScheduleDeleteViewTests(TestCase):
         )
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_review_transition_allows_incomplete_difference_up_to_one_hour(self):
+        self.line.weekly_target_hours = Decimal("9.00")
+        self.line.save(update_fields=["weekly_target_hours"])
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.REVIEW,
+                notes="Pasa a revision con faltante menor",
+            ),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.status, WeeklySchedule.Status.REVIEW)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.validation_status, ScheduleLine.ValidationStatus.INCOMPLETE)
+        self.assertEqual(self.line.weekly_hour_difference, Decimal("-1.00"))
+
+    @patch("schedules.views.generate_and_store_schedule_settlement")
+    def test_published_transition_allows_incomplete_difference_up_to_one_hour(self, mocked_settlement):
+        self.line.weekly_target_hours = Decimal("9.00")
+        self.line.save(update_fields=["weekly_target_hours"])
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.PUBLISHED,
+                notes="Publica con faltante menor",
+            ),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.status, WeeklySchedule.Status.PUBLISHED)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.validation_status, ScheduleLine.ValidationStatus.INCOMPLETE)
+        self.assertEqual(self.line.weekly_hour_difference, Decimal("-1.00"))
+        self.assertTrue(mocked_settlement.called)
+
+    def test_review_transition_blocks_incomplete_difference_over_one_hour(self):
+        self.line.weekly_target_hours = Decimal("9.50")
+        self.line.save(update_fields=["weekly_target_hours"])
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(
+                status=WeeklySchedule.Status.REVIEW,
+                notes="Intenta revision con faltante mayor",
+            ),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.status, WeeklySchedule.Status.DRAFT)
+        messages_list = [str(message) for message in response.context["messages"]]
+        self.assertTrue(any("faltante mayor a 1 hora" in message.lower() for message in messages_list))
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     def test_review_transition_sends_hourly_coverage_email(self):
         self.client.login(username="admin_delete", password="secret")
 
