@@ -171,7 +171,13 @@ function initScheduleCalculations() {
       if (dayState.dailyHours > 0.001) {
         continue;
       }
-      if (dayState.modeValue === "pay_day" || advanceDayModes.has(dayState.modeValue) || dayState.shiftCategories.has("rest")) {
+      const isNonWorkedHoliday = String(dayState.specialDayLabel || "").includes("Festivo");
+      if (
+        isNonWorkedHoliday
+        || dayState.modeValue === "pay_day"
+        || advanceDayModes.has(dayState.modeValue)
+        || dayState.shiftCategories.has("rest")
+      ) {
         return dayState.dayIndex;
       }
     }
@@ -1324,7 +1330,7 @@ function initScheduleCalculations() {
       });
     }
 
-    recalculateRow({ preservePersistedState: !rowHasServerErrors });
+    recalculateRow({ preservePersistedState: scheduleClosed && !rowHasServerErrors });
   });
 
   const roleFilter = document.querySelector("[data-role-filter]");

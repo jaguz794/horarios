@@ -1550,6 +1550,122 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.expected_weekly_hours, Decimal("43.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("1.00"))
 
+    def test_non_worked_holiday_with_worked_sunday_does_not_create_company_day_debt(self):
+        self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
+        line = self.build_line(
+            week_start=date(2026, 7, 12),
+            employee_identifier="4306",
+            weekly_target_hours=Decimal("50.00"),
+            shift_map={
+                0: "07:00-15:00",
+                1: "descanso",
+                2: "07:00-13:00",
+                3: "07:00-13:00",
+                4: "07:00-13:00",
+                5: "07:00-15:00",
+                6: "07:00-15:00",
+            },
+            second_shift_map={
+                2: "14:00-17:00",
+                3: "14:00-17:00",
+                4: "14:00-17:00",
+            },
+            daily_max_hours=Decimal("10.00"),
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+        expected_plan = build_expected_week_plan(line)
+        monday_plan = next(day for day in expected_plan["day_plans"] if day["index"] == 1)
+
+        self.assertEqual(line.special_days_generated, 1)
+        self.assertEqual(line.payment_days_used, 0)
+        self.assertEqual(line.advance_rest_days_used, 0)
+        self.assertEqual(line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(monday_plan["expected_reason"], "descanso_obligatorio")
+        self.assertTrue(monday_plan["is_non_worked_holiday"])
+        self.assertFalse(monday_plan["is_additional_rest_day"])
+
+    def test_blank_non_worked_holiday_with_worked_sunday_can_be_weekly_rest(self):
+        self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
+        line = self.build_line(
+            week_start=date(2026, 7, 12),
+            employee_identifier="4306B",
+            weekly_target_hours=Decimal("50.00"),
+            shift_map={
+                0: "07:00-15:00",
+                2: "07:00-13:00",
+                3: "07:00-13:00",
+                4: "07:00-13:00",
+                5: "07:00-15:00",
+                6: "07:00-15:00",
+            },
+            second_shift_map={
+                2: "14:00-17:00",
+                3: "14:00-17:00",
+                4: "14:00-17:00",
+            },
+            daily_max_hours=Decimal("10.00"),
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+        expected_plan = build_expected_week_plan(line)
+        monday_plan = next(day for day in expected_plan["day_plans"] if day["index"] == 1)
+
+        self.assertEqual(line.special_days_generated, 1)
+        self.assertEqual(line.accrued_day_balance, Decimal("1.00"))
+        self.assertEqual(line.expected_work_days, 6)
+        self.assertEqual(line.expected_weekly_hours, Decimal("50.00"))
+        self.assertEqual(expected_plan["mandatory_rest_index"], 1)
+        self.assertEqual(monday_plan["expected_reason"], "descanso_obligatorio")
+        self.assertTrue(monday_plan["is_non_worked_holiday"])
+        self.assertFalse(monday_plan["is_additional_rest_day"])
+
+    def test_worked_holiday_and_pay_day_from_zero_never_creates_negative_day_balance(self):
+        self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
+        line = self.build_line(
+            week_start=date(2026, 7, 12),
+            employee_identifier="4307",
+            weekly_target_hours=Decimal("46.00"),
+            shift_map={
+                0: "descanso",
+                1: "07:00-12:00",
+                2: "10:00-14:00",
+                3: "10:00-14:00",
+                4: "10:00-14:00",
+                5: "descanso",
+                6: "09:00-14:00",
+            },
+            second_shift_map={
+                1: "17:00-21:00",
+                2: "16:00-21:00",
+                3: "16:00-21:00",
+                4: "16:00-21:00",
+                6: "16:00-21:00",
+            },
+            compensation_map={5: ScheduleLine.CompensationMode.PAY_DAY},
+            daily_max_hours=Decimal("10.00"),
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.special_days_generated, 1)
+        self.assertEqual(line.payment_days_used, 1)
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(
+            list(
+                line.balance_movements.filter(is_reversal=False, is_reversed=False)
+                .order_by("movement_date", "pk")
+                .values_list("movement_type", "quantity_days")
+            ),
+            [
+                (ScheduleBalanceMovement.MovementType.SPECIAL_DAY, Decimal("1.00")),
+                (ScheduleBalanceMovement.MovementType.PAY_DAY, Decimal("-1.00")),
+            ],
+        )
+
     def test_rebuild_reverses_legacy_duplicate_special_day_movements_without_idempotency_key(self):
         self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
         line = self.build_line(

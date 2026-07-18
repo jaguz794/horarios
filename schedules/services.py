@@ -756,14 +756,17 @@ def get_weekly_rest_day_index(
         index = int(day_info["index"])
         if index == 0:
             continue
-        if decimal_hours(day_info["worked_hours"]) > Decimal("0.00"):
+        worked_hours = decimal_hours(day_info["worked_hours"])
+        if worked_hours > Decimal("0.00"):
             continue
+        special_label = str(day_info.get("special_label") or "")
+        is_non_worked_holiday = index != 0 and "Festivo" in special_label
         shift_categories = {
             get_shift_non_work_category(str(day_info.get("shift_1_label") or ""), shift_templates=shift_templates),
             get_shift_non_work_category(str(day_info.get("shift_2_label") or ""), shift_templates=shift_templates),
         }
         compensation_mode = str(day_info.get("compensation_mode") or "")
-        if "rest" in shift_categories or compensation_mode in {
+        if is_non_worked_holiday or "rest" in shift_categories or compensation_mode in {
             ScheduleLine.CompensationMode.PAY_DAY,
             *ADVANCE_DAY_COMPENSATION_MODES,
         }:
