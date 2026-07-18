@@ -1227,6 +1227,84 @@ class ScheduleCalculationTests(TestCase):
             ScheduleLine.objects.filter(schedule=self.schedule, employee_identifier="99887766").exists()
         )
 
+    @patch("schedules.services.fetch_active_staff_for_site")
+    def test_sync_schedule_preserves_existing_line_workload_snapshot_after_role_change(self, mock_fetch_staff):
+        job_role = JobRole.objects.create(
+            code="AUX",
+            name="AUXILIAR",
+            weekly_target_hours=Decimal("44.00"),
+            daily_max_hours=Decimal("9.00"),
+            base_work_days=6,
+        )
+        ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="5001",
+            employee_name="Empleado Jornada",
+            job_role_code="AUX",
+            job_role_name="AUXILIAR",
+            weekly_target_hours=Decimal("44.00"),
+            daily_max_hours=Decimal("9.00"),
+            base_work_days=6,
+        )
+        job_role.weekly_target_hours = Decimal("42.00")
+        job_role.save(update_fields=["weekly_target_hours", "updated_at"])
+        mock_fetch_staff.return_value = [
+            OperationalStaffingRecord(
+                employee_id="5001",
+                employee_name="Empleado Jornada Actualizado",
+                site_code=self.site.code,
+                department_code="A1",
+                department_name="ABASTOS",
+                role_code="AUX",
+                role_name="AUXILIAR",
+            ),
+        ]
+
+        created_count, updated_count = sync_schedule_from_legacy(self.schedule)
+
+        line = ScheduleLine.objects.get(schedule=self.schedule, employee_identifier="5001")
+        self.assertEqual(created_count, 0)
+        self.assertEqual(updated_count, 1)
+        self.assertEqual(line.employee_name, "Empleado Jornada Actualizado")
+        self.assertEqual(line.weekly_target_hours, Decimal("44.00"))
+        self.assertEqual(line.daily_max_hours, Decimal("9.00"))
+        self.assertEqual(line.base_work_days, 6)
+
+    @patch("schedules.services.fetch_active_staff_for_site")
+    def test_sync_schedule_uses_current_role_workload_for_new_schedule_lines(self, mock_fetch_staff):
+        JobRole.objects.create(
+            code="AUX",
+            name="AUXILIAR",
+            weekly_target_hours=Decimal("42.00"),
+            daily_max_hours=Decimal("9.00"),
+            base_work_days=6,
+        )
+        next_schedule = WeeklySchedule.objects.create(
+            site=self.site,
+            week_start_date=date(2026, 7, 19),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        mock_fetch_staff.return_value = [
+            OperationalStaffingRecord(
+                employee_id="5002",
+                employee_name="Empleado Nuevo",
+                site_code=self.site.code,
+                department_code="A1",
+                department_name="ABASTOS",
+                role_code="AUX",
+                role_name="AUXILIAR",
+            ),
+        ]
+
+        created_count, updated_count = sync_schedule_from_legacy(next_schedule)
+
+        line = ScheduleLine.objects.get(schedule=next_schedule, employee_identifier="5002")
+        self.assertEqual(created_count, 1)
+        self.assertEqual(updated_count, 0)
+        self.assertEqual(line.weekly_target_hours, Decimal("42.00"))
+        self.assertEqual(line.daily_max_hours, Decimal("9.00"))
+        self.assertEqual(line.base_work_days, 6)
+
     def test_sync_schedule_loads_blacklisted_staff_into_personal_vario(self):
         personal_vario, _ = Site.objects.get_or_create(
             code=Site.PERSONAL_VARIO_CODE,
@@ -3757,6 +3835,61 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(self.line.manual_day_adjustment, Decimal("0.00"))
         self.assertEqual(self.line.manual_hour_adjustment, Decimal("0.00"))
 
+    def test_flat_file_upload_preserves_existing_line_workload_snapshot_after_role_change(self):
+        self.line.job_role_code = self.job_role.code
+        self.line.job_role_name = self.job_role.name
+        self.line.weekly_target_hours = Decimal("44.00")
+        self.line.daily_max_hours = Decimal("9.00")
+        self.line.base_work_days = 6
+        self.line.save(
+            update_fields=[
+                "job_role_code",
+                "job_role_name",
+                "weekly_target_hours",
+                "daily_max_hours",
+                "base_work_days",
+                "updated_at",
+            ]
+        )
+        self.job_role.weekly_target_hours = Decimal("42.00")
+        self.job_role.save(update_fields=["weekly_target_hours", "updated_at"])
+
+        self.client.login(username="admin_delete", password="secret")
+        workbook = Workbook()
+        worksheet = workbook.active
+        headers = build_schedule_flat_file_headers(self.schedule)
+        worksheet.append(headers)
+        row = {header: "" for header in headers}
+        row["Cedula"] = self.line.employee_identifier
+        row["Empleado"] = self.line.employee_name
+        row["Cargo"] = self.job_role.name
+        row["Domingo turno 1"] = "08:00-16:00"
+        worksheet.append([row[header] for header in headers])
+        upload_buffer = BytesIO()
+        workbook.save(upload_buffer)
+        upload_buffer.seek(0)
+        upload = SimpleUploadedFile(
+            "horario_plano_jornada_congelada.xlsx",
+            upload_buffer.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        response = self.client.post(
+            reverse("schedules:flatfile-upload", kwargs={"pk": self.schedule.pk}),
+            {
+                "schedulefile-file": upload,
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.job_role_name, self.job_role.name)
+        self.assertEqual(self.line.weekly_target_hours, Decimal("44.00"))
+        self.assertEqual(self.line.daily_max_hours, Decimal("9.00"))
+        self.assertEqual(self.line.base_work_days, 6)
+
     @patch("schedules.views.import_schedule_flat_file", side_effect=ProgrammingError("columna faltante"))
     def test_admin_sees_friendly_message_when_flat_file_upload_requires_pending_migrations(self, mocked_import):
         self.client.login(username="admin_delete", password="secret")
@@ -4181,3 +4314,51 @@ class InitialBalanceAuditTests(TestCase):
         audit_row = build_schedule_balance_audit_rows(["9100"])[0]
         self.assertFalse(audit_row["has_difference"])
         self.assertIn("Recalculo aplicado correctamente", fixed_output.getvalue())
+
+    def test_audit_ignores_reversed_legacy_movements(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            initial_day_balance=Decimal("1.00"),
+        )
+        self.second_line.accrued_day_balance = Decimal("-1.00")
+        self.second_line.save(update_fields=["accrued_day_balance"])
+        ScheduleBalanceMovement.objects.create(
+            schedule=self.second_schedule,
+            line=self.second_line,
+            site=self.site,
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            job_role_name="AUXILIAR DE CARNES",
+            movement_date=date(2026, 7, 5),
+            movement_type=ScheduleBalanceMovement.MovementType.PAY_DAY,
+            quantity_days=Decimal("-2.00"),
+            equivalent_hours=Decimal("-16.00"),
+            balance_before_days=Decimal("1.00"),
+            balance_after_days=Decimal("-1.00"),
+            idempotency_key="activo-pay-day",
+            description="Pago con descanso",
+        )
+        ScheduleBalanceMovement.objects.create(
+            schedule=self.first_schedule,
+            line=self.first_line,
+            site=self.site,
+            employee_identifier="9100",
+            employee_name="Empleado Auditoria",
+            job_role_name="AUXILIAR DE CARNES",
+            movement_date=date(2026, 6, 28),
+            movement_type=ScheduleBalanceMovement.MovementType.SPECIAL_DAY,
+            quantity_days=Decimal("1.00"),
+            equivalent_hours=Decimal("8.00"),
+            balance_before_days=Decimal("0.00"),
+            balance_after_days=Decimal("1.00"),
+            movement_origin="legacy",
+            is_reversed=True,
+            description="Movimiento historico revertido",
+        )
+
+        audit_row = build_schedule_balance_audit_rows(["9100"])[0]
+
+        self.assertEqual(audit_row["audited_day_balance"], Decimal("-1.00"))
+        self.assertEqual(audit_row["stored_day_balance"], Decimal("-1.00"))
+        self.assertFalse(audit_row["has_difference"])

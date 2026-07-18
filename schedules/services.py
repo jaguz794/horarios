@@ -1691,6 +1691,31 @@ def parse_schedule_flat_boolean(value: object) -> bool:
     return normalized in {"1", "si", "sí", "s", "true", "verdadero", "x", "yes"}
 
 
+def line_has_frozen_workload_snapshot(line: ScheduleLine) -> bool:
+    return (
+        decimal_hours(line.weekly_target_hours) > Decimal("0.00")
+        and decimal_hours(line.daily_max_hours) > Decimal("0.00")
+        and int(line.base_work_days or 0) > 0
+    )
+
+
+def apply_job_role_snapshot(
+    line: ScheduleLine,
+    job_role: JobRole,
+    config: SystemConfiguration,
+    *,
+    overwrite_workload: bool,
+    role_code: str = "",
+    role_name: str = "",
+) -> None:
+    line.job_role_code = role_code or job_role.code or line.job_role_code or ""
+    line.job_role_name = role_name or job_role.name or line.job_role_name or ""
+    if overwrite_workload or not line_has_frozen_workload_snapshot(line):
+        line.weekly_target_hours = job_role.weekly_target_hours or config.default_weekly_hours
+        line.daily_max_hours = job_role.daily_max_hours or config.default_daily_max_hours
+        line.base_work_days = job_role.base_work_days or config.default_base_work_days
+
+
 def stringify_upload_identifier(value: object) -> str:
     if value in (None, ""):
         return ""
@@ -2014,11 +2039,12 @@ def import_schedule_flat_file(
             if matched_role is None:
                 errors.append(f"Fila {row_number}: el cargo '{role_name}' no existe en la parametrizacion.")
                 continue
-            line.job_role_code = matched_role.code or ""
-            line.job_role_name = matched_role.name
-            line.weekly_target_hours = matched_role.weekly_target_hours
-            line.daily_max_hours = matched_role.daily_max_hours
-            line.base_work_days = matched_role.base_work_days or config.default_base_work_days
+            apply_job_role_snapshot(
+                line,
+                matched_role,
+                config,
+                overwrite_workload=not line_has_frozen_workload_snapshot(line),
+            )
 
         employee_name = str(get_row_value(row, "Empleado") or "").strip()
         if employee_name:
@@ -3007,7 +3033,11 @@ def build_schedule_balance_audit_rows(
             "hours": decimal_hours(row["total_hours"]),
         }
         for row in (
-            ScheduleBalanceMovement.objects.filter(employee_identifier__in=identifiers)
+            ScheduleBalanceMovement.objects.filter(
+                employee_identifier__in=identifiers,
+                is_reversal=False,
+                is_reversed=False,
+            )
             .values("employee_identifier")
             .annotate(
                 total_days=Coalesce(
@@ -3164,6 +3194,7 @@ def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
         )
 
         line = existing_lines.get(employee.employee_id)
+        line_is_new = line is None
         if line is None:
             line = ScheduleLine(
                 schedule=schedule,
@@ -3176,24 +3207,32 @@ def sync_schedule_from_legacy(schedule: WeeklySchedule) -> tuple[int, int]:
         line.employee_name = employee.employee_name
         line.department_code = employee.department_code
         line.department_name = employee.department_name
+        role_snapshot_missing = not line_has_frozen_workload_snapshot(line)
         if schedule.site.is_personal_vario:
             if not (line.job_role_name or "").strip() or (line.job_role_name or "").strip().upper() == "PERSONAL VARIO":
-                line.job_role_code = employee.role_code or job_role.code
-                line.job_role_name = employee.role_name or job_role.name
-                line.weekly_target_hours = job_role.weekly_target_hours
-                line.daily_max_hours = job_role.daily_max_hours
-                line.base_work_days = job_role.base_work_days or config.default_base_work_days
+                apply_job_role_snapshot(
+                    line,
+                    job_role,
+                    config,
+                    overwrite_workload=line_is_new or role_snapshot_missing,
+                    role_code=employee.role_code,
+                    role_name=employee.role_name,
+                )
             else:
                 line.job_role_code = line.job_role_code or employee.role_code or job_role.code
                 line.weekly_target_hours = line.weekly_target_hours or job_role.weekly_target_hours
                 line.daily_max_hours = line.daily_max_hours or job_role.daily_max_hours
                 line.base_work_days = line.base_work_days or job_role.base_work_days or config.default_base_work_days
         else:
-            line.job_role_code = employee.role_code
-            line.job_role_name = employee.role_name
-            line.weekly_target_hours = job_role.weekly_target_hours
-            line.daily_max_hours = job_role.daily_max_hours
-            line.base_work_days = job_role.base_work_days or config.default_base_work_days
+            if line_is_new or role_snapshot_missing or not (line.job_role_name or "").strip():
+                apply_job_role_snapshot(
+                    line,
+                    job_role,
+                    config,
+                    overwrite_workload=line_is_new or role_snapshot_missing,
+                    role_code=employee.role_code,
+                    role_name=employee.role_name,
+                )
         line.save()
         touched_employee_identifiers.append(line.employee_identifier)
 
