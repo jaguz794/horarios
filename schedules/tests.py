@@ -675,6 +675,79 @@ class ScheduleCalculationTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("jornadas continuas", form.errors["day_0_shift_2"][0].lower())
 
+    def test_form_allows_split_afternoon_shift_when_second_starts_after_first(self):
+        ShiftTemplate.objects.create(
+            code="T5",
+            label="13:00-16:00",
+            start_time=time(13, 0),
+            end_time=time(16, 0),
+            duration_hours=Decimal("3.00"),
+            display_order=5,
+        )
+        ShiftTemplate.objects.create(
+            code="T6",
+            label="17:00-21:00",
+            start_time=time(17, 0),
+            end_time=time(21, 0),
+            duration_hours=Decimal("4.00"),
+            display_order=6,
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="124A",
+            employee_name="Empleado Turno Tarde",
+        )
+
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="13:00-16:00",
+                day_0_shift_2="17:00-21:00",
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_form_rejects_second_shift_when_it_starts_before_first_ends(self):
+        ShiftTemplate.objects.create(
+            code="T7",
+            label="13:00-16:00",
+            start_time=time(13, 0),
+            end_time=time(16, 0),
+            duration_hours=Decimal("3.00"),
+            display_order=7,
+        )
+        ShiftTemplate.objects.create(
+            code="T8",
+            label="15:00-21:00",
+            start_time=time(15, 0),
+            end_time=time(21, 0),
+            duration_hours=Decimal("6.00"),
+            display_order=8,
+        )
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="124B",
+            employee_name="Empleado Turno Cruzado",
+        )
+
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_0_shift_1="13:00-16:00",
+                day_0_shift_2="15:00-21:00",
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=[],
+            secondary_shift_choices=[],
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("debe iniciar despues", form.errors["day_0_shift_2"][0].lower())
+
     def test_form_allows_pay_day_without_prior_day_balance_until_minus_two(self):
         line = ScheduleLine.objects.create(
             schedule=self.schedule,

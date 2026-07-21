@@ -662,12 +662,6 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                     "Si el turno 1 ya cumple la jornada del dia, el turno 2 debe quedar vacio.",
                 )
 
-            if shift_1.start_time and shift_1.start_time >= NOON_TIME and not shift_1.is_full_day_shift:
-                self.add_error(
-                    shift_1_field,
-                    "Cuando hay turno 2, el turno 1 debe ser el primer tramo del dia.",
-                )
-
             if shift_2.start_time and shift_2.start_time < NOON_TIME and not shift_2.spans_next_day:
                 self.add_error(
                     shift_2_field,
