@@ -31,7 +31,7 @@ function initScheduleCalculations() {
   const companyDayRepaymentMode = "repay_company_day";
   const compensationModesWithHours = new Set(["pay_hours", ...moneyHourModes]);
   const restShiftLabels = new Set(["descanso"]);
-  const leaveShiftLabels = new Set(["incapacidad", "traslado", "vacaciones", "renuncia", "licencia"]);
+  const leaveShiftLabels = new Set(["contratacion", "incapacidad", "traslado", "vacaciones", "renuncia", "licencia"]);
   const autosaveEnabled = scheduleForm.dataset.autosaveEnabled === "true";
   const csrfToken = scheduleForm.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
   let autosaveDirty = false;

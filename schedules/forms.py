@@ -65,6 +65,8 @@ def build_shift_choices(second_slot: bool = False) -> list[tuple[str, str] | tup
 
     if not second_slot and "descanso" not in existing_labels:
         grouped_choices["Novedades"].append(("descanso", "descanso"))
+    if not second_slot and "contratacion" not in existing_labels:
+        grouped_choices["Novedades"].append(("contratacion", "contratacion"))
 
     choices: list[tuple[str, str] | tuple[str, list[tuple[str, str]]]] = [("", blank_label)]
     choices.extend((group_name, options) for group_name, options in grouped_choices.items())

@@ -37,6 +37,7 @@ from schedules.models import (
 NON_WORKED_SHIFT_LABELS = {
     "",
     "-",
+    "contratacion",
     "descanso",
     "incapacidad",
     "traslado",
@@ -76,6 +77,7 @@ REST_SHIFT_ALIASES = {
     REST_SHIFT_LABEL,
 }
 LEAVE_SHIFT_LABELS = {
+    "contratacion",
     "incapacidad",
     "traslado",
     "vacaciones",

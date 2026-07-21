@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 from core.models import ShiftTemplate
 
 NON_WORKED_LABELS = {
+    "contratacion",
     "descanso",
     "incapacidad",
     "licencia",

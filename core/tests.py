@@ -140,7 +140,7 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "2 horario(s) con novedades")
         self.assertContains(response, "2 persona(s) cargadas.")
         self.assertContains(response, "2 alerta(s) en 1 colaborador(es).")
-        self.assertContains(response, "Revisa objetivo semanal.")
+        self.assertContains(response, "Bloquea revision/publicacion")
         self.assertContains(response, "Ayuda")
         self.assertContains(response, "10vJTA2WoJ0HkF5ByLp35Gw1LKR2qs8zR/preview")
 

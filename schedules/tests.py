@@ -16,7 +16,7 @@ from openpyxl import Workbook, load_workbook
 
 from core.models import Holiday, JobRole, OperationalStaffCache, ShiftTemplate, Site, SystemConfiguration, UserSiteAccess
 from legacy.services import LegacyStaffLookupError, LegacyThirdPartyRecord, OperationalStaffingRecord
-from schedules.forms import ScheduleLineForm, ScheduleLoadForm
+from schedules.forms import ScheduleLineForm, ScheduleLoadForm, build_shift_choices
 from schedules.models import (
     EmployeeInitialBalance,
     EmployeeOvertimeRestriction,
@@ -710,6 +710,26 @@ class ScheduleCalculationTests(TestCase):
         )
 
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_form_allows_contractacion_as_non_worked_novelty(self):
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="124C",
+            employee_name="Empleado Contratacion",
+        )
+
+        form = ScheduleLineForm(
+            data=self.build_form_data(
+                day_1_shift_1="contratacion",
+            ),
+            instance=line,
+            schedule=self.schedule,
+            shift_choices=build_shift_choices(second_slot=False),
+            secondary_shift_choices=build_shift_choices(second_slot=True),
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["day_1_shift_1"], "contratacion")
 
     def test_form_rejects_second_shift_when_it_starts_before_first_ends(self):
         ShiftTemplate.objects.create(
@@ -1551,6 +1571,33 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.total_hours, Decimal("35.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
         self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+
+    def test_contractacion_days_reduce_weekly_journey_without_balance_movement(self):
+        line = self.build_line(
+            week_start=date(2026, 8, 16),
+            employee_identifier="4202C",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                0: "contratacion",
+                1: "contratacion",
+                2: "contratacion",
+                3: "09:00-16:00",
+                4: "09:00-16:00",
+                5: "09:00-16:00",
+                6: "09:00-16:00",
+            },
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_work_days, 4)
+        self.assertEqual(line.expected_weekly_hours, Decimal("28.00"))
+        self.assertEqual(line.total_hours, Decimal("28.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+        self.assertEqual(ScheduleBalanceMovement.objects.filter(schedule=line.schedule).count(), 0)
 
     def test_paid_hours_count_for_weekly_journey_without_generating_new_overtime(self):
         EmployeeInitialBalance.objects.create(
