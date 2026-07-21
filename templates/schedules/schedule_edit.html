@@ -322,7 +322,7 @@
               >
                 Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h. Resultado estimado: {{ line_form.display_day_balance|hours_int }} dia(s) y {{ line_form.display_hour_balance|hours_int }} h.
               </small>
-              <small class="live-summary" data-live-summary hidden></small>
+              <small class="live-summary" data-live-summary aria-live="polite" hidden></small>
               {% if line_form.non_field_errors %}
               <div class="row-errors">{{ line_form.non_field_errors }}</div>
               {% endif %}
@@ -335,7 +335,7 @@
                 {% endif %}
               </small>
               {% else %}
-              <small>Sin alertas</small>
+              <small data-persisted-summary>Sin alertas</small>
               {% endif %}
             </td>
           </tr>

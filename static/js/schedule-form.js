@@ -760,7 +760,7 @@ function initScheduleCalculations() {
     const hourBalanceCell = row.querySelector("[data-hour-balance]");
     const summaryCell = row.querySelector("[data-live-summary]");
     const balanceNote = row.querySelector("[data-balance-note]");
-    const persistedSummary = row.querySelector("[data-persisted-summary]");
+    const persistedSummaries = row.querySelectorAll("[data-persisted-summary]");
     const initialDayBalanceText = dayBalanceCell?.textContent || "";
     const initialHourBalanceText = hourBalanceCell?.textContent || "";
     const initialSummaryText = summaryCell?.textContent || "";
@@ -1272,9 +1272,9 @@ function initScheduleCalculations() {
           summaryCell.hidden = liveMessages.length === 0;
         }
       }
-      if (persistedSummary) {
+      persistedSummaries.forEach((persistedSummary) => {
         persistedSummary.hidden = !preservePersistedState;
-      }
+      });
     };
 
     const recalculateDirtyRow = () => recalculateRow({ preservePersistedState: false });

@@ -3409,6 +3409,21 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Rec. noct.")
         self.assertContains(response, 'data-show-night-hours="true"', html=False)
+
+    def test_schedule_alerts_column_has_live_and_persisted_summaries(self):
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-live-summary', html=False)
+        self.assertContains(response, 'aria-live="polite"', html=False)
+        self.assertContains(response, 'data-persisted-summary', html=False)
+
     def test_site_user_sees_compact_alert_summary(self):
         self.line.day_0_shift_1 = ""
         self.line.weekly_target_hours = Decimal("42.00")
