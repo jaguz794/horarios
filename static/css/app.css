@@ -1035,6 +1035,12 @@ textarea:focus {
   font-weight: 700;
 }
 
+.live-summary--blocking,
+.persisted-summary--blocking {
+  color: #a43720;
+  font-weight: 800;
+}
+
 .balance-note {
   display: block;
   margin-bottom: 6px;
@@ -1051,6 +1057,15 @@ textarea:focus {
   max-width: 150px;
   white-space: normal;
   line-height: 1.35;
+}
+
+.alerts-cell--blocking {
+  background: #fff1ed;
+  border-left: 3px solid #d84a34;
+}
+
+.schedule-row--blocking-status .metric-cell {
+  color: #a43720;
 }
 
 .alerts-column--detailed,

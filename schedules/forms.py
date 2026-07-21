@@ -33,10 +33,12 @@ from schedules.services import (
     get_selected_shift_templates,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
+    get_schedule_line_status_blocker_message,
     recalculate_schedule_line,
     resolve_compensation_usage,
     resolve_shift_metrics,
     schedule_accepts_blacklisted_staff,
+    schedule_line_blocks_status_transition,
 )
 
 NOON_TIME = datetime.strptime("12:00", "%H:%M").time()
@@ -494,6 +496,8 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             self.instance,
             balance_snapshot=self.balance_snapshot,
         )
+        self.blocks_status_transition = schedule_line_blocks_status_transition(self.instance)
+        self.status_blocker_message = get_schedule_line_status_blocker_message(self.instance)
         self.apply_style()
 
         for field_name in self.INVENTORY_FIELDS:
@@ -825,6 +829,8 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             calculated_line,
             balance_snapshot=self.balance_snapshot,
         )
+        self.blocks_status_transition = schedule_line_blocks_status_transition(calculated_line)
+        self.status_blocker_message = get_schedule_line_status_blocker_message(calculated_line)
         return cleaned_data
 
 

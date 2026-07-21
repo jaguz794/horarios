@@ -149,6 +149,7 @@
         data-default-weekly-hours="{{ config.default_weekly_hours }}"
         data-default-daily-max="{{ config.default_daily_max_hours }}"
         data-default-base-work-days="{{ config.default_base_work_days }}"
+        data-allowed-incomplete-difference="1"
         data-programming-interval-minutes="{{ config.programming_interval_minutes }}"
         data-show-night-hours="{% if show_night_hours %}true{% else %}false{% endif %}"
         data-show-detailed-alerts="{% if show_detailed_alerts %}true{% else %}false{% endif %}"
@@ -217,7 +218,7 @@
         <tbody>
           {% for line_form in line_formset %}
           <tr
-            class="schedule-row"
+            class="schedule-row{% if line_form.blocks_status_transition %} schedule-row--blocking-status{% endif %}"
             data-role-name="{{ line_form.instance.job_role_name|default:'' }}"
             data-weekly-target="{{ line_form.instance.weekly_target_hours }}"
             data-daily-max="{{ line_form.instance.daily_max_hours }}"
@@ -311,7 +312,7 @@
               </div>
             </td>
             {% endif %}
-            <td class="{% if show_detailed_alerts %}alerts-cell alerts-cell--detailed{% else %}alerts-cell{% endif %}">
+            <td class="{% if show_detailed_alerts %}alerts-cell alerts-cell--detailed{% else %}alerts-cell{% endif %}{% if line_form.blocks_status_transition %} alerts-cell--blocking{% endif %}">
               <small
                 class="balance-note"
                 data-balance-note
@@ -322,12 +323,12 @@
               >
                 Saldo previo: {{ line_form.balance_snapshot.prior_day_balance|hours_int }} dia(s) y {{ line_form.balance_snapshot.prior_hour_balance|hours_int }} h. Resultado estimado: {{ line_form.display_day_balance|hours_int }} dia(s) y {{ line_form.display_hour_balance|hours_int }} h.
               </small>
-              <small class="live-summary" data-live-summary aria-live="polite" hidden></small>
+              <small class="live-summary{% if line_form.blocks_status_transition %} live-summary--blocking{% endif %}" data-live-summary aria-live="polite" hidden></small>
               {% if line_form.non_field_errors %}
               <div class="row-errors">{{ line_form.non_field_errors }}</div>
               {% endif %}
               {% if line_form.instance.validation_summary %}
-              <small data-persisted-summary>
+              <small class="persisted-summary{% if line_form.blocks_status_transition %} persisted-summary--blocking{% endif %}" data-persisted-summary>
                 {% if show_detailed_alerts %}
                 {{ line_form.instance.validation_summary }}
                 {% else %}
@@ -335,7 +336,7 @@
                 {% endif %}
               </small>
               {% else %}
-              <small data-persisted-summary>Sin alertas</small>
+              <small class="persisted-summary" data-persisted-summary>Sin alertas</small>
               {% endif %}
             </td>
           </tr>

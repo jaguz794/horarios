@@ -39,6 +39,7 @@ from schedules.services import (
     recalculate_schedule_line,
     rebuild_balances_for_employees_from_week,
     round_minutes_to_interval,
+    schedule_line_blocks_status_transition,
     sync_schedule_from_legacy,
 )
 from schedules.settlement_pdf import get_settlement_rows
@@ -593,7 +594,43 @@ class ScheduleCalculationTests(TestCase):
 
         compact_summary = get_schedule_line_compact_alert_summary(line)
         self.assertIn("Resultado estimado:", compact_summary)
-        self.assertIn("Revisa jornada semanal.", compact_summary)
+        self.assertIn("Bloquea revision/publicacion", compact_summary)
+        self.assertIn("42 h", compact_summary)
+
+    def test_compact_alert_summary_hides_allowed_one_hour_difference(self):
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="134",
+            employee_name="Empleado Margen",
+            weekly_target_hours=Decimal("9.00"),
+            daily_max_hours=Decimal("8.00"),
+            day_0_shift_1="08:00-16:00",
+        )
+
+        recalculate_schedule_line(line)
+
+        compact_summary = get_schedule_line_compact_alert_summary(line)
+        self.assertIn("Resultado estimado:", compact_summary)
+        self.assertNotIn("Revisa jornada semanal", compact_summary)
+        self.assertNotIn("Bloquea revision/publicacion", compact_summary)
+        self.assertFalse(schedule_line_blocks_status_transition(line))
+
+    def test_allowed_one_hour_excess_is_not_counted_as_warning(self):
+        line = ScheduleLine.objects.create(
+            schedule=self.schedule,
+            employee_identifier="135",
+            employee_name="Empleado Exceso Permitido",
+            weekly_target_hours=Decimal("7.00"),
+            daily_max_hours=Decimal("8.00"),
+            day_0_shift_1="08:00-16:00",
+        )
+
+        recalculate_schedule_line(line)
+
+        self.assertEqual(line.validation_status, ScheduleLine.ValidationStatus.OVERPLANNED)
+        self.assertEqual(line.weekly_hour_difference, Decimal("1.00"))
+        self.assertEqual(line.warnings_count, 0)
+        self.assertIn("Estado: Valida con diferencia permitida.", line.validation_summary)
 
     def test_schedule_lines_are_ordered_by_role_name_then_employee(self):
         ScheduleLine.objects.create(
@@ -3439,7 +3476,7 @@ class ScheduleDeleteViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Resultado estimado:")
-        self.assertContains(response, "Revisa jornada semanal.")
+        self.assertContains(response, "Bloquea revision/publicacion")
         self.assertNotContains(response, "Estado:")
 
     def test_admin_sees_detailed_alert_summary(self):
@@ -3456,8 +3493,42 @@ class ScheduleDeleteViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Estado: Incompleta corregible.")
+        self.assertContains(response, "Bloquea revision/publicacion")
         self.assertContains(response, "Jornada ajustada: 35.00 h.")
+
+    def test_allowed_one_hour_difference_is_not_rendered_as_warning(self):
+        self.line.weekly_target_hours = Decimal("9.00")
+        recalculate_schedule_line(self.line)
+        self.line.save()
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Estado: Valida con diferencia permitida.")
+        self.assertNotContains(response, "Bloquea revision/publicacion")
+        self.assertNotContains(response, "alerts-cell--blocking")
+
+    def test_blocking_hour_difference_is_rendered_in_red(self):
+        self.line.weekly_target_hours = Decimal("9.50")
+        recalculate_schedule_line(self.line)
+        self.line.save()
+        self.client.login(username="admin_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Bloquea revision/publicacion")
+        self.assertContains(response, "diferencia de 1.5 h")
+        self.assertContains(response, "alerts-cell--blocking")
 
     def test_published_schedule_hides_save_button_and_shows_closed_notice(self):
         self.schedule.status = WeeklySchedule.Status.PUBLISHED

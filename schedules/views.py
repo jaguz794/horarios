@@ -1,5 +1,4 @@
 import logging
-from decimal import Decimal
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
@@ -43,6 +42,7 @@ from schedules.services import (
     rebuild_balances_for_employees_from_week,
     release_schedule_balance_reversal_links,
     schedule_accepts_blacklisted_staff,
+    schedule_line_blocks_status_transition,
     save_schedule_line_with_balances,
     sync_schedule_from_legacy,
 )
@@ -54,18 +54,6 @@ from legacy.services import (
     LegacyStaffLookupError,
     lookup_third_party_by_identifier,
 )
-
-
-ALLOWED_INCOMPLETE_STATUS_DIFFERENCE_HOURS = Decimal("1.00")
-
-
-def line_blocks_status_transition(line: ScheduleLine) -> bool:
-    if line.validation_status == ScheduleLine.ValidationStatus.INCOMPLETE:
-        return abs(line.weekly_hour_difference or Decimal("0.00")) > ALLOWED_INCOMPLETE_STATUS_DIFFERENCE_HOURS
-    return line.validation_status in {
-        ScheduleLine.ValidationStatus.IMPOSSIBLE,
-        ScheduleLine.ValidationStatus.INCONSISTENT,
-    }
 
 
 class ScheduleListView(LoginRequiredMixin, ListView):
@@ -396,7 +384,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             preview_lines = [recalculate_schedule_line(form.save(commit=False)) for form in line_formset.forms]
             target_status = schedule_form.cleaned_data.get("status")
             if target_status in {WeeklySchedule.Status.REVIEW, WeeklySchedule.Status.PUBLISHED} and any(
-                line_blocks_status_transition(preview_line)
+                schedule_line_blocks_status_transition(preview_line)
                 for preview_line in preview_lines
             ):
                 messages.error(

@@ -65,6 +65,7 @@ COMPANY_DAY_REPAYMENT_AUTO_DESCRIPTION = "Compensacion automatica de dia a favor
 COMPANY_DAY_REPAYMENT_MANUAL_DESCRIPTION = "Compensacion de dia a favor de la empresa"
 COMPANY_DAY_REPAYMENT_MOVEMENT_LABEL = "Dia a favor de la empresa compensado"
 MAX_ADVANCE_REST_PENDING_DAYS = Decimal("2.00")
+ALLOWED_INCOMPLETE_STATUS_DIFFERENCE_HOURS = Decimal("1.00")
 ADVANCE_REST_LIMIT_ERROR_MESSAGE = (
     f"El trabajador ya alcanzo el limite maximo de {int(MAX_ADVANCE_REST_PENDING_DAYS)} dias adelantados "
     "a favor de la empresa."
@@ -209,6 +210,53 @@ def format_weekly_difference_compact(difference_hours: Decimal) -> str:
     if normalized < Decimal("0.00"):
         return f"{abs(normalized)} h pendientes"
     return "sin diferencia horaria"
+
+
+def format_hours_for_message(value: Decimal) -> str:
+    rendered = format(decimal_hours(value).normalize(), "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def is_non_blocking_hour_difference(status: str, difference_hours: Decimal) -> bool:
+    if status not in {
+        ScheduleLine.ValidationStatus.INCOMPLETE,
+        ScheduleLine.ValidationStatus.OVERPLANNED,
+    }:
+        return False
+    return abs(decimal_hours(difference_hours)) <= ALLOWED_INCOMPLETE_STATUS_DIFFERENCE_HOURS
+
+
+def schedule_line_blocks_status_transition(line: ScheduleLine) -> bool:
+    if line.validation_status == ScheduleLine.ValidationStatus.INCOMPLETE:
+        return abs(decimal_hours(line.weekly_hour_difference)) > ALLOWED_INCOMPLETE_STATUS_DIFFERENCE_HOURS
+    return line.validation_status in {
+        ScheduleLine.ValidationStatus.IMPOSSIBLE,
+        ScheduleLine.ValidationStatus.INCONSISTENT,
+    }
+
+
+def get_schedule_line_status_blocker_message(line: ScheduleLine) -> str:
+    difference_hours = decimal_hours(line.weekly_hour_difference)
+    if (
+        line.validation_status == ScheduleLine.ValidationStatus.INCOMPLETE
+        and abs(difference_hours) > ALLOWED_INCOMPLETE_STATUS_DIFFERENCE_HOURS
+    ):
+        return (
+            "Bloquea revision/publicacion: tiene una diferencia de "
+            f"{format_hours_for_message(abs(difference_hours))} h. "
+            "Modifica la programacion o agrega horas pagas y guarda."
+        )
+    if line.validation_status == ScheduleLine.ValidationStatus.IMPOSSIBLE:
+        return (
+            "Bloquea revision/publicacion: la jornada ajustada no cabe en la capacidad disponible. "
+            "Revisa turnos, novedades o parametrizacion del cargo y guarda."
+        )
+    if line.validation_status == ScheduleLine.ValidationStatus.INCONSISTENT:
+        return (
+            "Bloquea revision/publicacion: hay una configuracion inconsistente. "
+            "Revisa pagos, descansos, saldos o turnos y guarda."
+        )
+    return ""
 
 
 def summarize_schedule_day_movements(
@@ -2195,6 +2243,15 @@ def get_schedule_line_compact_alert_summary(
         config=config,
     )
     movement_summary = summarize_schedule_day_movements(day_breakdown, payment_resolution["day_states"])
+    status_value = str(validation_metrics["status"])
+    difference_hours = decimal_hours(validation_metrics["difference_hours"])
+    status_blocker_message = get_schedule_line_status_blocker_message(
+        ScheduleLine(
+            validation_status=status_value,
+            weekly_hour_difference=difference_hours,
+        )
+    )
+    tolerated_hour_difference = is_non_blocking_hour_difference(status_value, difference_hours)
     categories: list[str] = []
     daily_limit = line.daily_max_hours or config.default_daily_max_hours
     overtime_restriction = get_active_overtime_restriction(line.employee_identifier)
@@ -2234,10 +2291,15 @@ def get_schedule_line_compact_alert_summary(
     ):
         categories.append("saldo previo")
 
-    if validation_metrics["status"] in {
+    if status_blocker_message:
+        categories.append(status_blocker_message)
+    elif validation_metrics["status"] in {
         ScheduleLine.ValidationStatus.INCOMPLETE,
-        ScheduleLine.ValidationStatus.IMPOSSIBLE,
         ScheduleLine.ValidationStatus.OVERPLANNED,
+    } and not tolerated_hour_difference:
+        categories.append("jornada semanal")
+    elif validation_metrics["status"] in {
+        ScheduleLine.ValidationStatus.IMPOSSIBLE,
         ScheduleLine.ValidationStatus.INCONSISTENT,
     }:
         categories.append("jornada semanal")
@@ -2246,7 +2308,17 @@ def get_schedule_line_compact_alert_summary(
         categories_text = "Sin alertas"
     else:
         unique_categories = list(dict.fromkeys(categories))
-        categories_text = f"Revisa {', '.join(unique_categories)}."
+        if status_blocker_message:
+            extra_categories = [
+                category
+                for category in unique_categories
+                if category != status_blocker_message
+            ]
+            categories_text = status_blocker_message
+            if extra_categories:
+                categories_text += f" Revisa {', '.join(extra_categories)}."
+        else:
+            categories_text = f"Revisa {', '.join(unique_categories)}."
 
     movement_notes: list[str] = []
     if movement_summary["generated_sunday_days"] > 0:
@@ -2525,8 +2597,12 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         line.accrued_hour_balance + (line.accrued_day_balance * day_reference_hours)
     ).quantize(TWO_DECIMALS)
 
+    tolerated_hour_difference = is_non_blocking_hour_difference(
+        line.validation_status,
+        line.weekly_hour_difference,
+    )
     effective_weekly_hours = decimal_hours(validation_metrics["effective_total_hours"])
-    if effective_weekly_hours > weekly_target:
+    if effective_weekly_hours > weekly_target and not tolerated_hour_difference:
         warnings.append(f"Supera el objetivo semanal: {effective_weekly_hours} h vs {weekly_target} h.")
 
     if (
@@ -2568,26 +2644,26 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     ):
         line.validation_status = ScheduleLine.ValidationStatus.INCONSISTENT
 
-    if line.validation_status == ScheduleLine.ValidationStatus.INCOMPLETE:
-        warnings.append(
-            "La programacion esta "
-            f"{abs(line.weekly_hour_difference)} h por debajo de la jornada ajustada y aun existe capacidad para completarla."
-        )
-    elif line.validation_status == ScheduleLine.ValidationStatus.IMPOSSIBLE:
-        warnings.append(
-            "La jornada ajustada exige "
-            f"{line.expected_weekly_hours} h, pero la capacidad disponible es {line.available_capacity_hours} h."
-        )
-    elif line.validation_status == ScheduleLine.ValidationStatus.OVERPLANNED:
+    status_blocker_message = get_schedule_line_status_blocker_message(line)
+    if status_blocker_message:
+        warnings.append(status_blocker_message)
+    elif line.validation_status == ScheduleLine.ValidationStatus.OVERPLANNED and not tolerated_hour_difference:
         warnings.append(
             "La programacion supera la jornada ajustada del cargo en "
             f"{line.weekly_hour_difference} h."
         )
-    elif line.validation_status == ScheduleLine.ValidationStatus.INCONSISTENT:
-        warnings.append("La linea tiene una configuracion inconsistente para validar la jornada semanal.")
+    elif line.validation_status == ScheduleLine.ValidationStatus.INCOMPLETE and not tolerated_hour_difference:
+        warnings.append(
+            "La programacion esta "
+            f"{abs(line.weekly_hour_difference)} h por debajo de la jornada ajustada y aun existe capacidad para completarla."
+        )
+
+    status_label = line.get_validation_status_display()
+    if tolerated_hour_difference:
+        status_label = "Valida con diferencia permitida"
 
     summary_parts = [
-        f"Estado: {line.get_validation_status_display()}.",
+        f"Estado: {status_label}.",
         f"Jornada cargo: {weekly_target} h.",
         f"Dias base: {validation_metrics['base_work_days']}.",
         f"Equivalente diario: {validation_metrics['daily_equivalent_hours']} h.",

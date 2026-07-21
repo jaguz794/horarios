@@ -15,6 +15,9 @@ function initScheduleCalculations() {
   const defaultWeeklyHours = parseFloat(scheduleTable.dataset.defaultWeeklyHours || "0");
   const defaultDailyMax = parseFloat(scheduleTable.dataset.defaultDailyMax || "0");
   const defaultBaseWorkDays = Number.parseInt(scheduleTable.dataset.defaultBaseWorkDays || "6", 10) || 6;
+  const allowedIncompleteDifference = Number.parseFloat(
+    scheduleTable.dataset.allowedIncompleteDifference || "1",
+  ) || 1;
   const programmingIntervalMinutes = Number.parseInt(
     scheduleTable.dataset.programmingIntervalMinutes || "30",
     10,
@@ -74,6 +77,37 @@ function initScheduleCalculations() {
     }
     return "sin diferencia horaria";
   };
+
+  const isNonBlockingHourDifference = (validationStatus, weeklyHourDifference) => (
+    ["INCOMPLETA_CORREGIBLE", "EXCESO_PROGRAMADO"].includes(validationStatus)
+    && Math.abs(roundHours(weeklyHourDifference)) <= allowedIncompleteDifference + 0.001
+  );
+
+  const doesStatusBlockTransition = (validationStatus, weeklyHourDifference) => {
+    if (validationStatus === "INCOMPLETA_CORREGIBLE") {
+      return Math.abs(roundHours(weeklyHourDifference)) > allowedIncompleteDifference + 0.001;
+    }
+    return ["IMPOSIBLE_POR_CAPACIDAD", "INCONSISTENTE"].includes(validationStatus);
+  };
+
+  const getStatusBlockerMessage = (validationStatus, weeklyHourDifference) => {
+    if (validationStatus === "INCOMPLETA_CORREGIBLE") {
+      return `Bloquea revision/publicacion: tiene una diferencia de ${formatHours(Math.abs(weeklyHourDifference), true)}. Modifica la programacion o agrega horas pagas y guarda.`;
+    }
+    if (validationStatus === "IMPOSIBLE_POR_CAPACIDAD") {
+      return "Bloquea revision/publicacion: la jornada ajustada no cabe en la capacidad disponible. Revisa turnos, novedades o parametrizacion del cargo y guarda.";
+    }
+    if (validationStatus === "INCONSISTENTE") {
+      return "Bloquea revision/publicacion: hay una configuracion inconsistente. Revisa pagos, descansos, saldos o turnos y guarda.";
+    }
+    return "";
+  };
+
+  const getDisplayValidationStatus = (validationStatus, weeklyHourDifference) => (
+    isNonBlockingHourDifference(validationStatus, weeklyHourDifference)
+      ? "VALIDA CON DIFERENCIA PERMITIDA"
+      : validationStatus
+  );
 
   const toMinutes = (timeValue) => {
     const [hours, minutes] = timeValue.split(":").map((item) => Number.parseInt(item, 10));
@@ -760,6 +794,7 @@ function initScheduleCalculations() {
     const hourBalanceCell = row.querySelector("[data-hour-balance]");
     const summaryCell = row.querySelector("[data-live-summary]");
     const balanceNote = row.querySelector("[data-balance-note]");
+    const alertsCell = row.querySelector(".alerts-cell");
     const persistedSummaries = row.querySelectorAll("[data-persisted-summary]");
     const initialDayBalanceText = dayBalanceCell?.textContent || "";
     const initialHourBalanceText = hourBalanceCell?.textContent || "";
@@ -869,7 +904,15 @@ function initScheduleCalculations() {
     };
 
   const buildLiveSummary = (summaryState) => {
+      const statusBlocksTransition = Boolean(summaryState.blocksStatusTransition);
+      const statusLabel = getDisplayValidationStatus(
+        summaryState.validationStatus,
+        summaryState.weeklyHourDifference,
+      );
       const liveMessages = [];
+      if (statusBlocksTransition) {
+        liveMessages.push(getStatusBlockerMessage(summaryState.validationStatus, summaryState.weeklyHourDifference));
+      }
       liveMessages.push(`Resultado estimado: ${describeDayBalance(summaryState.endingDayBalance)} y ${describeWeeklyDifference(summaryState.weeklyHourDifference)}.`);
       if (summaryState.generatedSundayDays > 0 || summaryState.generatedHolidayDays > 0 || summaryState.paidDays > 0) {
         const movementMessages = [];
@@ -884,7 +927,7 @@ function initScheduleCalculations() {
         }
         liveMessages.push(`Movimientos: ${movementMessages.join("; ")}.`);
       }
-      liveMessages.push(`Estado: ${summaryState.validationStatus}.`);
+      liveMessages.push(`Estado: ${statusLabel}.`);
       liveMessages.push(`Jornada ajustada: ${formatHours(summaryState.expectedWeeklyHours, true)}. Programadas: ${formatHours(summaryState.totalHours, true)}. Diferencia: ${formatHours(summaryState.weeklyHourDifference, true)}.`);
       if (summaryState.roundingAdjustmentMinutes !== 0) {
         liveMessages.push(`Calculo exacto previo al redondeo: ${formatMinutesDuration(summaryState.expectedWeeklyExactMinutes)}. Ajuste tecnico: ${formatSignedMinutesDuration(summaryState.roundingAdjustmentMinutes)}.`);
@@ -957,7 +1000,11 @@ function initScheduleCalculations() {
       }
 
       const conciseMessages = [];
-      conciseMessages.push(`Estado: ${summaryState.validationStatus}.`);
+      if (statusBlocksTransition) {
+        conciseMessages.push(getStatusBlockerMessage(summaryState.validationStatus, summaryState.weeklyHourDifference));
+      } else {
+        conciseMessages.push(`Estado: ${statusLabel}.`);
+      }
       if (summaryState.specialDaysGenerated > 0.001) {
         conciseMessages.push(`Dia(s) generado(s): ${formatHours(summaryState.specialDaysGenerated)}.`);
       }
@@ -1218,6 +1265,7 @@ function initScheduleCalculations() {
                 ? "INCOMPLETA_CORREGIBLE"
                 : "IMPOSIBLE_POR_CAPACIDAD")
               : "VALIDA";
+      const statusBlocksTransition = doesStatusBlockTransition(validationStatus, weeklyHourDifference);
 
       const liveMessages = buildLiveSummary({
         totalHours: creditedTotalHours,
@@ -1233,6 +1281,7 @@ function initScheduleCalculations() {
           || dayState.expectedReason === "descanso_adicional"
         )).length,
         validationStatus,
+        blocksStatusTransition: statusBlocksTransition,
         totalNightHours,
         overtimeHours,
         overtimeDailyRestrictionExceededCount,
@@ -1271,10 +1320,20 @@ function initScheduleCalculations() {
           summaryCell.textContent = liveMessages.join(" ");
           summaryCell.hidden = liveMessages.length === 0;
         }
+        if (!preservePersistedState) {
+          summaryCell.classList.toggle("live-summary--blocking", statusBlocksTransition);
+        }
       }
       persistedSummaries.forEach((persistedSummary) => {
         persistedSummary.hidden = !preservePersistedState;
       });
+      if (!preservePersistedState) {
+        row.classList.toggle("schedule-row--blocking-status", statusBlocksTransition);
+        alertsCell?.classList.toggle("alerts-cell--blocking", statusBlocksTransition);
+        persistedSummaries.forEach((persistedSummary) => {
+          persistedSummary.classList.toggle("persisted-summary--blocking", statusBlocksTransition);
+        });
+      }
     };
 
     const recalculateDirtyRow = () => recalculateRow({ preservePersistedState: false });
