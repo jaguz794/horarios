@@ -2190,6 +2190,7 @@ def get_schedule_line_compact_alert_summary(
         expected_plan=expected_plan,
         day_breakdown=day_breakdown,
         total_hours=total_worked_hours,
+        credited_hours=decimal_hours(payment_resolution["payment_hours_used"]),
         excluded_compensation_hours=decimal_hours(payment_resolution["excluded_company_day_hours"]),
         config=config,
     )
@@ -2289,6 +2290,7 @@ def build_schedule_validation_metrics(
     expected_plan: dict[str, object],
     day_breakdown: list[dict[str, Decimal | date | str | int]],
     total_hours: Decimal,
+    credited_hours: Decimal = Decimal("0.00"),
     excluded_compensation_hours: Decimal = Decimal("0.00"),
     config: SystemConfiguration | None = None,
 ) -> dict[str, object]:
@@ -2331,7 +2333,11 @@ def build_schedule_validation_metrics(
 
     capacity_hours = capacity_hours.quantize(TWO_DECIMALS)
     raw_total_hours = decimal_hours(total_hours)
-    effective_total_hours = max(raw_total_hours - excluded_compensation_hours, Decimal("0.00")).quantize(TWO_DECIMALS)
+    credited_hours = decimal_hours(credited_hours)
+    effective_total_hours = max(
+        raw_total_hours + credited_hours - excluded_compensation_hours,
+        Decimal("0.00"),
+    ).quantize(TWO_DECIMALS)
     difference_hours = (effective_total_hours - adjusted_weekly_hours).quantize(TWO_DECIMALS)
     mandatory_rest_index = int(expected_plan.get("mandatory_rest_index", 0) or 0)
 
@@ -2353,6 +2359,7 @@ def build_schedule_validation_metrics(
         "capacity_hours": capacity_hours,
         "difference_hours": difference_hours,
         "raw_total_hours": raw_total_hours,
+        "credited_hours": credited_hours,
         "effective_total_hours": effective_total_hours,
         "excluded_compensation_hours": excluded_compensation_hours,
         "adjusted_weekly_hours": adjusted_weekly_hours,
@@ -2458,6 +2465,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     line.expected_work_days = int(expected_plan["expected_work_days"])
     line.expected_weekly_hours = decimal_hours(expected_plan["expected_weekly_hours"])
     line.night_bonus_hours = total_night_bonus.quantize(TWO_DECIMALS)
+    worked_total_hours = line.total_hours
 
     manual_day_adjustment = decimal_hours(line.manual_day_adjustment)
     manual_hour_adjustment = decimal_hours(line.manual_hour_adjustment)
@@ -2477,11 +2485,15 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         line,
         expected_plan=expected_plan,
         day_breakdown=day_breakdown,
-        total_hours=line.total_hours,
+        total_hours=worked_total_hours,
+        credited_hours=decimal_hours(payment_resolution["payment_hours_used"]),
         excluded_compensation_hours=decimal_hours(payment_resolution["excluded_company_day_hours"]),
         config=config,
     )
     movement_summary = summarize_schedule_day_movements(day_breakdown, payment_resolution["day_states"])
+    line.total_hours = (worked_total_hours + decimal_hours(payment_resolution["payment_hours_used"])).quantize(
+        TWO_DECIMALS
+    )
     line.weekly_hour_difference = decimal_hours(validation_metrics["difference_hours"])
     line.overtime_hours = decimal_hours(payment_resolution["generated_overtime_hours"])
     line.special_days_generated = int(payment_resolution["generated_special_days"])
@@ -2582,7 +2594,7 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         f"Descanso obligatorio: {validation_metrics['mandatory_rest_label']}.",
         f"Descansos adicionales: {validation_metrics['additional_rest_days']}.",
         f"Jornada ajustada: {line.expected_weekly_hours} h.",
-        f"Programadas: {validation_metrics['raw_total_hours']} h.",
+        f"Programadas: {line.total_hours} h.",
         f"Validadas para jornada: {validation_metrics['effective_total_hours']} h.",
         f"Diferencia: {line.weekly_hour_difference} h.",
         f"Capacidad disponible: {line.available_capacity_hours} h.",
@@ -2593,6 +2605,8 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         summary_parts.append(
             f"Horas excluidas por compensacion de deuda: {validation_metrics['excluded_compensation_hours']} h."
         )
+    if decimal_hours(validation_metrics["credited_hours"]) > Decimal("0.00"):
+        summary_parts.append(f"Horas pagas aplicadas a jornada: {validation_metrics['credited_hours']} h.")
     if int(payment_resolution["company_day_repayments_used"]) > 0:
         summary_parts.append(
             f"Dias compensados a favor de la empresa: {int(payment_resolution['company_day_repayments_used'])}."

@@ -1090,13 +1090,14 @@ function initScheduleCalculations() {
       const dayStates = expectedPlan.dayStates;
       dayStates.forEach((dayState) => {
         if (dayState.modeValue === "pay_hours") {
+          const targetHours = dayState.expectedHours > 0.001 ? dayState.expectedHours : effectiveDailyMax;
           if (dayState.compensationHoursValue <= 0.001) {
             invalidPositiveHoursCount += 1;
           } else if (dayState.expectedHours <= 0.001) {
             payHoursOverTargetCount += 1;
           } else if (dayState.dailyHours + dayState.compensationHoursValue > effectiveDailyMax + 0.001) {
             payHoursOverTargetCount += 1;
-          } else if (dayState.dailyHours + dayState.compensationHoursValue < effectiveDailyMax - 0.001) {
+          } else if (dayState.dailyHours + dayState.compensationHoursValue < targetHours - 0.001) {
             payHoursIncompleteCount += 1;
           }
         }
@@ -1127,7 +1128,8 @@ function initScheduleCalculations() {
         baseWorkDays,
         dayReferenceHours,
       );
-      const evaluatedTotalHours = roundHours(totalHours - paymentUsage.excludedCompanyDayHours);
+      const creditedTotalHours = roundHours(totalHours + paymentUsage.paymentHoursUsed);
+      const evaluatedTotalHours = roundHours(creditedTotalHours - paymentUsage.excludedCompanyDayHours);
       const weeklyHourDifference = roundHours(evaluatedTotalHours - expectedPlan.expectedWeeklyHours);
       const overtimeHours = roundHours(paymentUsage.generatedOvertimeHours);
       const overtimeWeeklyRestrictionExceeded =
@@ -1146,7 +1148,7 @@ function initScheduleCalculations() {
           dailyHours: dayState.dailyHours,
           compensationHoursValue: dayState.compensationHoursValue,
           expectedHours: dayState.expectedHours,
-          targetDailyHours: effectiveDailyMax,
+          targetDailyHours: dayState.expectedHours > 0.001 ? dayState.expectedHours : effectiveDailyMax,
           endingDayBalance,
           endingHourBalance,
           paymentState: paymentUsage.dayStates[dayState.dayIndex],
@@ -1170,7 +1172,7 @@ function initScheduleCalculations() {
       });
 
       if (totalCell) {
-        totalCell.textContent = formatHours(totalHours);
+        totalCell.textContent = formatHours(creditedTotalHours);
       }
       if (overtimeCell) {
         overtimeCell.textContent = formatHours(overtimeHours);
@@ -1218,7 +1220,7 @@ function initScheduleCalculations() {
               : "VALIDA";
 
       const liveMessages = buildLiveSummary({
-        totalHours,
+        totalHours: creditedTotalHours,
         expectedWeeklyHours: expectedPlan.expectedWeeklyHours,
         expectedWeeklyExactMinutes: expectedPlan.expectedWeeklyExactMinutes,
         roundingAdjustmentMinutes: expectedPlan.roundingAdjustmentMinutes,

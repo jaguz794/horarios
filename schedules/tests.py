@@ -1378,6 +1378,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
         shift_map: dict[int, str] | None = None,
         second_shift_map: dict[int, str] | None = None,
         compensation_map: dict[int, str] | None = None,
+        compensation_hours_map: dict[int, Decimal | str] | None = None,
         daily_max_hours: Decimal = Decimal("9.00"),
     ) -> ScheduleLine:
         schedule = WeeklySchedule.objects.create(
@@ -1399,6 +1400,8 @@ class ProportionalWeeklyBalanceTests(TestCase):
             payload[f"day_{index}_shift_2"] = label
         for index, mode in (compensation_map or {}).items():
             payload[f"day_{index}_compensation_mode"] = mode
+        for index, hours in (compensation_hours_map or {}).items():
+            payload[f"day_{index}_compensation_hours"] = Decimal(str(hours))
         return ScheduleLine.objects.create(**payload)
 
     def rebuild_employee(self, week_start: date, employee_identifier: str):
@@ -1438,6 +1441,80 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.total_hours, Decimal("35.00"))
         self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
         self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+
+    def test_paid_hours_count_for_weekly_journey_without_generating_new_overtime(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="4210",
+            employee_name="Empleado 4210",
+            initial_hour_balance=Decimal("5.00"),
+        )
+        line = self.build_line(
+            week_start=date(2026, 8, 16),
+            employee_identifier="4210",
+            weekly_target_hours=Decimal("44.00"),
+            shift_map={
+                0: "14:00-21:00",
+                1: "14:00-21:00",
+                2: "07:00-14:00",
+                3: "09:00-16:00",
+                4: "14:00-21:00",
+                5: "descanso",
+                6: "10:00-18:00",
+            },
+            compensation_map={
+                2: ScheduleLine.CompensationMode.PAY_HOURS,
+                4: ScheduleLine.CompensationMode.PAY_HOURS,
+                5: ScheduleLine.CompensationMode.PAY_DAY,
+            },
+            compensation_hours_map={2: "1.00", 4: "1.00"},
+            daily_max_hours=Decimal("8.00"),
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.payment_hours_used, Decimal("2.00"))
+        self.assertEqual(line.total_hours, Decimal("45.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("1.00"))
+        self.assertEqual(line.overtime_hours, Decimal("0.00"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("3.00"))
+        self.assertEqual(line.validation_status, ScheduleLine.ValidationStatus.OVERPLANNED)
+
+    def test_only_paid_hours_can_cover_adjusted_weekly_journey(self):
+        self.ensure_holiday(date(2026, 8, 17), "Festivo lunes")
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="4211",
+            employee_name="Empleado 4211",
+            initial_day_balance=Decimal("1.00"),
+            initial_hour_balance=Decimal("28.00"),
+        )
+        line = self.build_line(
+            week_start=date(2026, 8, 16),
+            employee_identifier="4211",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={0: "descanso", 1: "festivo", 6: "descanso"},
+            compensation_map={
+                2: ScheduleLine.CompensationMode.PAY_HOURS,
+                3: ScheduleLine.CompensationMode.PAY_HOURS,
+                4: ScheduleLine.CompensationMode.PAY_HOURS,
+                5: ScheduleLine.CompensationMode.PAY_HOURS,
+                6: ScheduleLine.CompensationMode.PAY_DAY,
+            },
+            compensation_hours_map={2: "7.00", 3: "7.00", 4: "7.00", 5: "7.00"},
+            daily_max_hours=Decimal("8.00"),
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.payment_hours_used, Decimal("28.00"))
+        self.assertEqual(line.expected_work_days, 4)
+        self.assertEqual(line.expected_weekly_hours, Decimal("28.00"))
+        self.assertEqual(line.total_hours, Decimal("28.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(line.overtime_hours, Decimal("0.00"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+        self.assertEqual(line.validation_status, ScheduleLine.ValidationStatus.VALID)
 
     def test_sunday_and_holiday_generate_days_and_weekly_rest_pay_day_consumes_one(self):
         self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
