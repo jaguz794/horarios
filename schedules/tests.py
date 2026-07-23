@@ -1710,7 +1710,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
                 self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
                 self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
 
-    def test_inasistencia_keeps_weekly_requirement_and_does_not_move_balance(self):
+    def test_inasistencia_reduces_weekly_requirement_and_generates_company_day(self):
         line = self.build_line(
             week_start=date(2026, 12, 6),
             employee_identifier="INASISTENCIA1",
@@ -1729,12 +1729,42 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
         line.refresh_from_db()
 
-        self.assertEqual(line.expected_work_days, 6)
-        self.assertEqual(line.expected_weekly_hours, Decimal("42.00"))
+        self.assertEqual(line.expected_work_days, 5)
+        self.assertEqual(line.expected_weekly_hours, Decimal("35.00"))
         self.assertEqual(line.total_hours, Decimal("35.00"))
-        self.assertEqual(line.weekly_hour_difference, Decimal("-7.00"))
-        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("-1.00"))
         self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+        self.assertFalse(schedule_line_blocks_status_transition(line))
+        self.assertIn("a favor de la empresa por inasistencia", line.validation_summary)
+
+    def test_inasistencia_respects_company_day_negative_limit(self):
+        EmployeeInitialBalance.objects.create(
+            employee_identifier="INASISTENCIA2",
+            employee_name="Empleado INASISTENCIA2",
+            initial_day_balance=Decimal("-2.00"),
+        )
+        line = self.build_line(
+            week_start=date(2026, 12, 13),
+            employee_identifier="INASISTENCIA2",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                0: "descanso",
+                1: "inasistencia",
+                2: "09:00-16:00",
+                3: "09:00-16:00",
+                4: "09:00-16:00",
+                5: "09:00-16:00",
+                6: "09:00-16:00",
+            },
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_weekly_hours, Decimal("35.00"))
+        self.assertEqual(line.accrued_day_balance, Decimal("-2.00"))
+        self.assertEqual(line.validation_status, ScheduleLine.ValidationStatus.INCONSISTENT)
         self.assertTrue(schedule_line_blocks_status_transition(line))
 
     def test_prestamo_destination_form_disables_days_outside_loan_scope(self):

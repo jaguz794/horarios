@@ -291,6 +291,8 @@ function initScheduleCalculations() {
         expectedReason = "festivo_no_trabajado";
       } else if (isUnlinkedLoanDay) {
         expectedReason = "prestamo_sin_destino";
+      } else if (isAbsenceDay) {
+        expectedReason = "inasistencia";
       } else if (isLeaveDay) {
         expectedReason = "novedad_no_laborable";
       }
@@ -534,6 +536,7 @@ function initScheduleCalculations() {
     let paymentDaysUsed = 0;
     let advanceRestDaysUsed = 0;
     let additionalRestDaysUsed = 0;
+    let absenceDaysUsed = 0;
     let companyDayRepaymentsUsed = 0;
     let moneyPaymentDaysUsed = 0;
     let paymentHoursUsed = 0;
@@ -639,6 +642,18 @@ function initScheduleCalculations() {
             dayState.source = "day_limit";
             dayState.valid = false;
           }
+        } else if (entry.isAbsenceDay) {
+          const projectedBalance = roundHours(remainingDayBalance - 1);
+          if (projectedBalance >= -2 - 0.001) {
+            remainingDayBalance = projectedBalance;
+            absenceDaysUsed += 1;
+            dayState.source = "signed_day_balance";
+            dayState.appliedDayDelta = -1;
+          } else {
+            invalidAutoRestDayIndices.push(entry.index);
+            dayState.source = "day_limit";
+            dayState.valid = false;
+          }
         } else if (entry.mode === "pay_hours") {
           if (requestedHours <= 0.001 || remainingHourBalance + 0.001 < requestedHours) {
             invalidPayHoursIndices.push(entry.index);
@@ -697,6 +712,7 @@ function initScheduleCalculations() {
       paymentDaysUsed,
       advanceRestDaysUsed,
       additionalRestDaysUsed,
+      absenceDaysUsed,
       companyDayRepaymentsUsed,
       automaticCompanyDayRepaymentsUsed: automaticRepaymentIndexes.size,
       automaticRepaymentIndexes: [...automaticRepaymentIndexes].sort((left, right) => left - right),
@@ -999,6 +1015,9 @@ function initScheduleCalculations() {
       if (summaryState.unlinkedLoanDays > 0) {
         liveMessages.push(`Prestamo sin sede destino: reduce ${summaryState.unlinkedLoanDays} dia(s) de la jornada y no mueve saldos.`);
       }
+      if (summaryState.absenceDaysUsed > 0) {
+        liveMessages.push(`${summaryState.absenceDaysUsed} dia(s) a favor de la empresa por inasistencia.`);
+      }
       if (summaryState.companyDayRepaymentsUsed > 0) {
         liveMessages.push(`Compensa ${summaryState.companyDayRepaymentsUsed} dia(s) a favor de la empresa.`);
       }
@@ -1235,6 +1254,7 @@ function initScheduleCalculations() {
           isHoliday: dayState.isHoliday,
           isNonWorkedHoliday: dayState.isNonWorkedHoliday,
           isLeaveDay: dayState.isLeaveDay,
+          isAbsenceDay: dayState.isAbsenceDay,
           isAdditionalRestDay: dayState.isAdditionalRestDay,
         })),
         priorDayBalance + manualDayAdjustment,
@@ -1365,6 +1385,7 @@ function initScheduleCalculations() {
         specialDaysGenerated,
         companyDayRepaymentsUsed: paymentUsage.companyDayRepaymentsUsed,
         automaticCompanyDayRepaymentsUsed: paymentUsage.automaticCompanyDayRepaymentsUsed,
+        absenceDaysUsed: paymentUsage.absenceDaysUsed,
         excludedCompanyDayHours: paymentUsage.excludedCompanyDayHours,
         invalidPayDayCount: paymentUsage.invalidPayDayIndices.length,
         invalidPayMoneyDayCount: paymentUsage.invalidPayMoneyDayIndices.length,

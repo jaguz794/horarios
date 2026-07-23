@@ -286,6 +286,7 @@ def summarize_schedule_day_movements(
         "paid_days": 0,
         "advance_days": 0,
         "additional_rest_days": 0,
+        "absence_days": 0,
         "company_day_repayments": 0,
     }
     for day_info in day_breakdown:
@@ -306,7 +307,10 @@ def summarize_schedule_day_movements(
         elif movement_type == ScheduleBalanceMovement.MovementType.ADVANCE_DAY and applied_day_delta < Decimal("0.00"):
             summary["advance_days"] += 1
         elif movement_type == ScheduleBalanceMovement.MovementType.ADDITIONAL_REST and applied_day_delta < Decimal("0.00"):
-            summary["additional_rest_days"] += 1
+            if str(day_state.get("day_movement_description") or "").strip().casefold() == "inasistencia":
+                summary["absence_days"] += 1
+            else:
+                summary["additional_rest_days"] += 1
         elif movement_type == COMPANY_DAY_REPAYMENT_MOVEMENT and applied_day_delta > Decimal("0.00"):
             summary["company_day_repayments"] += 1
     return summary
@@ -932,6 +936,9 @@ def build_expected_week_plan(
         elif is_unlinked_loan_day:
             expected_hours = Decimal("0.00")
             expected_reason = "prestamo_sin_destino"
+        elif is_absence_day:
+            expected_hours = Decimal("0.00")
+            expected_reason = "inasistencia"
         elif is_leave_day:
             expected_hours = Decimal("0.00")
             expected_reason = "novedad_no_laborable"
@@ -945,6 +952,7 @@ def build_expected_week_plan(
             "festivo_no_trabajado",
             "novedad_no_laborable",
             "prestamo_sin_destino",
+            "inasistencia",
         }:
             reducer_indexes.append(index)
 
@@ -1058,6 +1066,9 @@ def build_compensation_entries(
                 expected_plan_by_index.get(int(day_info["index"]), {}).get("is_non_worked_holiday", False)
             ),
             "is_leave_day": bool(expected_plan_by_index.get(int(day_info["index"]), {}).get("is_leave_day", False)),
+            "is_absence_day": bool(
+                expected_plan_by_index.get(int(day_info["index"]), {}).get("is_absence_day", False)
+            ),
             "is_additional_rest_day": bool(
                 expected_plan_by_index.get(int(day_info["index"]), {}).get("is_additional_rest_day", False)
             ),
@@ -1309,6 +1320,7 @@ def resolve_compensation_usage(
         worked_hours = decimal_hours(entry.get("worked_hours", Decimal("0.00")) or "0")
         special_generated = bool(entry.get("special_generated"))
         is_additional_rest_day = bool(entry.get("is_additional_rest_day", False))
+        is_absence_day = bool(entry.get("is_absence_day", False))
         day_state: dict[str, Decimal | str | bool] = {
             "mode": compensation_mode,
             "requested_hours": compensation_hours,
@@ -1383,6 +1395,11 @@ def resolve_compensation_usage(
             day_state["source"] = "signed_day_balance"
             day_state["day_movement_type"] = ScheduleBalanceMovement.MovementType.ADDITIONAL_REST
             day_state["day_movement_description"] = "Descanso adicional"
+        elif is_absence_day:
+            requested_day_delta = Decimal("-1.00")
+            day_state["source"] = "signed_day_balance"
+            day_state["day_movement_type"] = ScheduleBalanceMovement.MovementType.ADDITIONAL_REST
+            day_state["day_movement_description"] = "Inasistencia"
         elif compensation_mode == ScheduleLine.CompensationMode.PAY_HOURS:
             if compensation_hours <= Decimal("0.00") or remaining_hour_balance < compensation_hours:
                 invalid_pay_hours_indices.append(index)
@@ -2465,6 +2482,10 @@ def get_schedule_line_compact_alert_summary(
         movement_notes.append(
             f"{movement_summary['advance_days']} dia(s) registrado(s) como descanso adelantado"
         )
+    if movement_summary["absence_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['absence_days']} dia(s) a favor de la empresa por inasistencia"
+        )
     if movement_summary["company_day_repayments"] > 0:
         movement_notes.append(
             f"{movement_summary['company_day_repayments']} dia(s) compensado(s) a favor de la empresa"
@@ -2534,6 +2555,7 @@ def build_schedule_validation_metrics(
             "festivo_no_trabajado",
             "novedad_no_laborable",
             "prestamo_sin_destino",
+            "inasistencia",
         }:
             reducer_days += 1
             if expected_reason in {
@@ -2855,6 +2877,10 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
     if movement_summary["advance_days"] > 0:
         movement_notes.append(
             f"{movement_summary['advance_days']} dia(s) registrado(s) como descanso adelantado"
+        )
+    if movement_summary["absence_days"] > 0:
+        movement_notes.append(
+            f"{movement_summary['absence_days']} dia(s) a favor de la empresa por inasistencia"
         )
     if movement_summary["company_day_repayments"] > 0:
         movement_notes.append(
