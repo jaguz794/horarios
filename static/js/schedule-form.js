@@ -31,7 +31,19 @@ function initScheduleCalculations() {
   const companyDayRepaymentMode = "repay_company_day";
   const compensationModesWithHours = new Set(["pay_hours", ...moneyHourModes]);
   const restShiftLabels = new Set(["descanso"]);
-  const leaveShiftLabels = new Set(["contratacion", "incapacidad", "traslado", "vacaciones", "renuncia", "licencia"]);
+  const leaveShiftLabels = new Set([
+    "contratacion",
+    "festivo",
+    "incapacidad",
+    "traslado",
+    "vacaciones",
+    "volante",
+    "volantes",
+    "renuncia",
+    "licencia",
+  ]);
+  const loanShiftLabels = new Set(["prestamo"]);
+  const absenceShiftLabels = new Set(["inasistencia"]);
   const autosaveEnabled = scheduleForm.dataset.autosaveEnabled === "true";
   const csrfToken = scheduleForm.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
   let autosaveDirty = false;
@@ -154,6 +166,12 @@ function initScheduleCalculations() {
     }
   };
 
+  const normalizeShiftKey = (value) => String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+
   const parseRangeMetrics = (label) => {
     const match = String(label || "").trim().match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
     if (!match) {
@@ -179,12 +197,18 @@ function initScheduleCalculations() {
   };
 
   const getShiftNonWorkCategory = (label) => {
-    const normalized = String(label || "").trim().toLowerCase();
+    const normalized = normalizeShiftKey(label);
     if (!normalized) {
       return "";
     }
     if (restShiftLabels.has(normalized)) {
       return "rest";
+    }
+    if (loanShiftLabels.has(normalized)) {
+      return "loan";
+    }
+    if (absenceShiftLabels.has(normalized)) {
+      return "absence";
     }
     if (leaveShiftLabels.has(normalized)) {
       return "leave";
@@ -228,6 +252,16 @@ function initScheduleCalculations() {
     const provisionalStates = dayStates.map((dayState) => {
       const isHoliday = String(dayState.specialDayLabel || "").includes("Festivo") && dayState.dayIndex !== 0;
       const isNonWorkedHoliday = isHoliday && dayState.dailyHours <= 0.001;
+      const externalLoanHours = roundHours(dayState.externalLoanHours || 0);
+      const isLoanDay =
+        dayState.dailyHours <= 0.001
+        && dayState.shiftCategories.has("loan");
+      const isUnlinkedLoanDay = isLoanDay && externalLoanHours <= 0.001;
+      const isAbsenceDay =
+        dayState.dailyHours <= 0.001
+        && dayState.shiftCategories.has("absence")
+        && dayState.modeValue !== "pay_day"
+        && !advanceDayModes.has(dayState.modeValue);
       const isLeaveDay =
         dayState.dailyHours <= 0.001
         && dayState.shiftCategories.has("leave")
@@ -255,6 +289,8 @@ function initScheduleCalculations() {
         expectedReason = "descanso_adicional";
       } else if (isNonWorkedHoliday) {
         expectedReason = "festivo_no_trabajado";
+      } else if (isUnlinkedLoanDay) {
+        expectedReason = "prestamo_sin_destino";
       } else if (isLeaveDay) {
         expectedReason = "novedad_no_laborable";
       }
@@ -267,6 +303,10 @@ function initScheduleCalculations() {
         isHoliday,
         isNonWorkedHoliday,
         isLeaveDay,
+        isLoanDay,
+        isUnlinkedLoanDay,
+        externalLoanHours,
+        isAbsenceDay,
         isMandatoryRestDay: dayState.dayIndex === mandatoryRestIndex,
         isAdditionalRestDay,
         expectedReason,
@@ -707,6 +747,14 @@ function initScheduleCalculations() {
 
   const rows = document.querySelectorAll(".schedule-row");
 
+  const parseExternalLoanHoursByIndex = (rawValue) => {
+    try {
+      return JSON.parse(rawValue || "{}") || {};
+    } catch (_error) {
+      return {};
+    }
+  };
+
   const markAutosaveDirty = () => {
     if (!autosaveEnabled || scheduleClosed) {
       return;
@@ -787,6 +835,7 @@ function initScheduleCalculations() {
         .map((value) => Number.parseInt(value, 10))
         .filter((value) => Number.isInteger(value)),
     );
+    const externalLoanHoursByIndex = parseExternalLoanHoursByIndex(row.dataset.externalLoanHours);
     const priorDayBalance = roundHours(parseDecimal(row.dataset.priorDayBalance));
     const priorHourBalance = clampNonNegative(parseDecimal(row.dataset.priorHourBalance));
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
@@ -944,6 +993,12 @@ function initScheduleCalculations() {
       if (summaryState.specialDaysGenerated > 0.001) {
         liveMessages.push(`Genera ${formatHours(summaryState.specialDaysGenerated)} dia(s) por domingos/festivos.`);
       }
+      if (summaryState.externalLoanHours > 0.001) {
+        liveMessages.push(`Horas de prestamo en otra sede: ${formatHours(summaryState.externalLoanHours, true)}.`);
+      }
+      if (summaryState.unlinkedLoanDays > 0) {
+        liveMessages.push(`Prestamo sin sede destino: reduce ${summaryState.unlinkedLoanDays} dia(s) de la jornada y no mueve saldos.`);
+      }
       if (summaryState.companyDayRepaymentsUsed > 0) {
         liveMessages.push(`Compensa ${summaryState.companyDayRepaymentsUsed} dia(s) a favor de la empresa.`);
       }
@@ -1080,6 +1135,7 @@ function initScheduleCalculations() {
         const compensationHoursValue = roundHours(parseDecimal(compensationHours?.value));
         const specialDayLabel = dayCell.dataset.specialDay || "";
         const specialGenerated = Boolean(specialDayLabel) && dailyHours > 0.001;
+        const externalLoanHours = roundHours(parseDecimal(externalLoanHoursByIndex[String(dayIndex)] || 0));
         const dailyOvertimeHours = roundHours(Math.max(dailyHours - dayReferenceHours, 0));
         const shiftCategories = new Set([
           getShiftNonWorkCategory(shift1),
@@ -1134,6 +1190,7 @@ function initScheduleCalculations() {
           modeValue,
           compensationHoursValue,
           dailyHours,
+          externalLoanHours,
           dailyOvertimeHours,
           specialGenerated,
           specialDayLabel,
@@ -1143,6 +1200,10 @@ function initScheduleCalculations() {
 
       const expectedPlan = buildExpectedPlan(rawDayStates, effectiveWeeklyTarget, baseWorkDays, scopeIndexes);
       const dayStates = expectedPlan.dayStates;
+      const externalLoanHours = roundHours(dayStates.reduce(
+        (total, dayState) => total + roundHours(dayState.externalLoanHours || 0),
+        0,
+      ));
       dayStates.forEach((dayState) => {
         if (dayState.modeValue === "pay_hours") {
           const targetHours = dayState.expectedHours > 0.001 ? dayState.expectedHours : effectiveDailyMax;
@@ -1183,7 +1244,7 @@ function initScheduleCalculations() {
         baseWorkDays,
         dayReferenceHours,
       );
-      const creditedTotalHours = roundHours(totalHours + paymentUsage.paymentHoursUsed);
+      const creditedTotalHours = roundHours(totalHours + paymentUsage.paymentHoursUsed + externalLoanHours);
       const evaluatedTotalHours = roundHours(creditedTotalHours - paymentUsage.excludedCompanyDayHours);
       const weeklyHourDifference = roundHours(evaluatedTotalHours - expectedPlan.expectedWeeklyHours);
       const overtimeHours = roundHours(paymentUsage.generatedOvertimeHours);
@@ -1288,6 +1349,10 @@ function initScheduleCalculations() {
           || dayState.expectedReason === "descanso_adelantado"
           || dayState.expectedReason === "descanso_adicional"
         )).length,
+        unlinkedLoanDays: expectedPlan.dayStates.filter(
+          (dayState) => dayState.expectedReason === "prestamo_sin_destino",
+        ).length,
+        externalLoanHours,
         validationStatus,
         blocksStatusTransition: statusBlocksTransition,
         totalNightHours,

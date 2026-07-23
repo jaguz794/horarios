@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+import json
 import re
 
 from django import forms
@@ -33,6 +34,7 @@ from schedules.services import (
     get_selected_shift_templates,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
+    get_schedule_line_external_loan_hours_by_index,
     get_schedule_line_scope_indexes,
     get_schedule_line_status_blocker_message,
     recalculate_schedule_line,
@@ -409,6 +411,16 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
             else get_schedule_line_scope_indexes(self.instance)
         )
         self.scope_indexes_csv = ",".join(str(index) for index in sorted(self.scope_indexes))
+        self.external_loan_hours_by_index = get_schedule_line_external_loan_hours_by_index(
+            self.instance,
+            config=self.config,
+        )
+        self.external_loan_hours_json = json.dumps(
+            {
+                str(index): str(hours)
+                for index, hours in sorted(self.external_loan_hours_by_index.items())
+            }
+        )
         self.overtime_restriction = overtime_restriction
         if self.overtime_restriction is None:
             self.overtime_restriction = get_active_overtime_restriction(self.instance.employee_identifier)

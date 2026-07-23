@@ -39,10 +39,14 @@ NON_WORKED_SHIFT_LABELS = {
     "-",
     "contratacion",
     "descanso",
+    "festivo",
     "incapacidad",
+    "inasistencia",
     "prestamo",
     "traslado",
     "vacaciones",
+    "volante",
+    "volantes",
     "renuncia",
     "licencia",
 }
@@ -80,12 +84,16 @@ REST_SHIFT_ALIASES = {
 }
 LEAVE_SHIFT_LABELS = {
     "contratacion",
+    "festivo",
     "incapacidad",
     "traslado",
     "vacaciones",
+    "volante",
+    "volantes",
     "renuncia",
     "licencia",
 }
+ABSENCE_SHIFT_LABELS = {"inasistencia"}
 
 SCHEDULE_BALANCE_MOVEMENT_LABELS = {
     ScheduleBalanceMovement.MovementType.OVERTIME: "Hora extra generada",
@@ -609,6 +617,8 @@ def get_shift_non_work_category(
         return "rest"
     if lowered in LOAN_SHIFT_LABELS:
         return "loan"
+    if lowered in ABSENCE_SHIFT_LABELS:
+        return "absence"
     if lowered in LEAVE_SHIFT_LABELS:
         return "leave"
 
@@ -620,6 +630,8 @@ def get_shift_non_work_category(
             return "rest"
         if lowered in LOAN_SHIFT_LABELS:
             return "loan"
+        if lowered in ABSENCE_SHIFT_LABELS:
+            return "absence"
         return "leave"
 
     return ""
@@ -858,6 +870,7 @@ def build_expected_week_plan(
     programming_interval_minutes = get_programming_interval_minutes(config=config)
     mandatory_rest_index = get_weekly_rest_day_index(line, day_breakdown, shift_templates=shift_templates)
     scope_indexes = scope_indexes if scope_indexes is not None else get_schedule_line_scope_indexes(line)
+    external_loan_hours_by_index = get_schedule_line_external_loan_hours_by_index(line, config=config)
     day_plans: list[dict[str, object]] = []
     pending_expected_indexes: list[int] = []
     reducer_indexes: list[int] = []
@@ -874,6 +887,14 @@ def build_expected_week_plan(
             get_shift_non_work_category(str(day_info.get("shift_1_label") or ""), shift_templates=shift_templates),
             get_shift_non_work_category(str(day_info.get("shift_2_label") or ""), shift_templates=shift_templates),
         }
+        external_loan_hours = decimal_hours(external_loan_hours_by_index.get(index, Decimal("0.00")))
+        is_loan_day = worked_hours == Decimal("0.00") and "loan" in shift_categories
+        is_unlinked_loan_day = is_loan_day and external_loan_hours == Decimal("0.00")
+        is_absence_day = (
+            worked_hours == Decimal("0.00")
+            and "absence" in shift_categories
+            and compensation_mode not in {ScheduleLine.CompensationMode.PAY_DAY, *ADVANCE_DAY_COMPENSATION_MODES}
+        )
         is_leave_day = (
             worked_hours == Decimal("0.00")
             and "leave" in shift_categories
@@ -908,6 +929,9 @@ def build_expected_week_plan(
         elif is_non_worked_holiday:
             expected_hours = Decimal("0.00")
             expected_reason = "festivo_no_trabajado"
+        elif is_unlinked_loan_day:
+            expected_hours = Decimal("0.00")
+            expected_reason = "prestamo_sin_destino"
         elif is_leave_day:
             expected_hours = Decimal("0.00")
             expected_reason = "novedad_no_laborable"
@@ -920,6 +944,7 @@ def build_expected_week_plan(
             "descanso_adicional",
             "festivo_no_trabajado",
             "novedad_no_laborable",
+            "prestamo_sin_destino",
         }:
             reducer_indexes.append(index)
 
@@ -932,6 +957,10 @@ def build_expected_week_plan(
                 "is_holiday": is_holiday,
                 "is_non_worked_holiday": is_non_worked_holiday,
                 "is_leave_day": is_leave_day,
+                "is_loan_day": is_loan_day,
+                "is_unlinked_loan_day": is_unlinked_loan_day,
+                "external_loan_hours": external_loan_hours,
+                "is_absence_day": is_absence_day,
                 "is_mandatory_rest_day": index == mandatory_rest_index,
                 "is_advance_rest_day": compensation_mode in ADVANCE_DAY_COMPENSATION_MODES,
                 "is_compensatory_rest_day": compensation_mode == ScheduleLine.CompensationMode.PAY_DAY,
@@ -1175,11 +1204,22 @@ def get_schedule_line_external_loan_hours(
     *,
     config: SystemConfiguration | None = None,
 ) -> Decimal:
+    return sum(
+        get_schedule_line_external_loan_hours_by_index(line, config=config).values(),
+        Decimal("0.00"),
+    ).quantize(TWO_DECIMALS)
+
+
+def get_schedule_line_external_loan_hours_by_index(
+    line: ScheduleLine,
+    *,
+    config: SystemConfiguration | None = None,
+) -> dict[int, Decimal]:
     schedule = getattr(line, "schedule", None)
     employee_identifier = (getattr(line, "employee_identifier", "") or "").strip()
     loan_indexes = get_schedule_line_loan_indexes(line)
     if schedule is None or not schedule.week_start_date or not employee_identifier or not loan_indexes:
-        return Decimal("0.00")
+        return {}
 
     config = config or SystemConfiguration.load()
     same_week_lines = (
@@ -1190,7 +1230,7 @@ def get_schedule_line_external_loan_hours(
         )
         .exclude(pk=getattr(line, "pk", None))
     )
-    borrowed_hours = Decimal("0.00")
+    borrowed_hours_by_index: dict[int, Decimal] = {index: Decimal("0.00") for index in loan_indexes}
     for candidate in same_week_lines:
         candidate_templates = get_selected_shift_templates(candidate)
         candidate_breakdown = build_line_day_breakdown(
@@ -1199,9 +1239,17 @@ def get_schedule_line_external_loan_hours(
             shift_templates=candidate_templates,
         )
         for day_info in candidate_breakdown:
-            if int(day_info["index"]) in loan_indexes:
-                borrowed_hours += decimal_hours(day_info["worked_hours"])
-    return borrowed_hours.quantize(TWO_DECIMALS)
+            index = int(day_info["index"])
+            if index in loan_indexes:
+                borrowed_hours_by_index[index] = (
+                    borrowed_hours_by_index.get(index, Decimal("0.00"))
+                    + decimal_hours(day_info["worked_hours"])
+                ).quantize(TWO_DECIMALS)
+    return {
+        index: hours.quantize(TWO_DECIMALS)
+        for index, hours in borrowed_hours_by_index.items()
+        if hours > Decimal("0.00")
+    }
 
 
 def resolve_compensation_usage(
@@ -2433,6 +2481,15 @@ def get_schedule_line_compact_alert_summary(
         summary_parts.append(f"Movimientos: {'; '.join(movement_notes)}.")
     if external_loan_hours > Decimal("0.00"):
         summary_parts.append(f"Horas de prestamo en otra sede: {external_loan_hours} h.")
+    unlinked_loan_days = [
+        day_plan
+        for day_plan in expected_plan.get("day_plans", [])
+        if str(day_plan.get("expected_reason") or "") == "prestamo_sin_destino"
+    ]
+    if unlinked_loan_days:
+        summary_parts.append(
+            f"Prestamo sin sede destino: reduce {len(unlinked_loan_days)} dia(s) de la jornada y no mueve saldos."
+        )
     if categories_text != "Sin alertas":
         summary_parts.append(categories_text)
     return " ".join(summary_parts)
@@ -2476,6 +2533,7 @@ def build_schedule_validation_metrics(
             "descanso_adicional",
             "festivo_no_trabajado",
             "novedad_no_laborable",
+            "prestamo_sin_destino",
         }:
             reducer_days += 1
             if expected_reason in {
@@ -2768,6 +2826,15 @@ def recalculate_schedule_line(line: ScheduleLine) -> ScheduleLine:
         summary_parts.append(f"Horas pagas aplicadas a jornada: {payment_hours} h.")
     if external_loan_hours > Decimal("0.00"):
         summary_parts.append(f"Horas de prestamo en otra sede: {external_loan_hours} h.")
+    unlinked_loan_days = [
+        day_plan
+        for day_plan in expected_plan.get("day_plans", [])
+        if str(day_plan.get("expected_reason") or "") == "prestamo_sin_destino"
+    ]
+    if unlinked_loan_days:
+        summary_parts.append(
+            f"Prestamo sin sede destino: reduce {len(unlinked_loan_days)} dia(s) de la jornada y no mueve saldos."
+        )
     if int(payment_resolution["company_day_repayments_used"]) > 0:
         summary_parts.append(
             f"Dias compensados a favor de la empresa: {int(payment_resolution['company_day_repayments_used'])}."
