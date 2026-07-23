@@ -219,7 +219,7 @@ function initScheduleCalculations() {
     return 0;
   };
 
-  const buildExpectedPlan = (dayStates, weeklyTargetValue, baseWorkDaysValue) => {
+  const buildExpectedPlan = (dayStates, weeklyTargetValue, baseWorkDaysValue, scopeIndexes = null) => {
     const mandatoryRestIndex = getWeeklyRestDayIndex(dayStates);
     const expectedIndexes = [];
     const weeklyTarget = roundHours(weeklyTargetValue);
@@ -243,7 +243,9 @@ function initScheduleCalculations() {
         && !isNonWorkedHoliday;
 
       let expectedReason = "laborable";
-      if (dayState.dayIndex === mandatoryRestIndex) {
+      if (scopeIndexes && !scopeIndexes.has(dayState.dayIndex)) {
+        expectedReason = "fuera_de_rango";
+      } else if (dayState.dayIndex === mandatoryRestIndex) {
         expectedReason = "descanso_obligatorio";
       } else if (dayState.modeValue === "pay_day") {
         expectedReason = "descanso_compensatorio";
@@ -779,6 +781,12 @@ function initScheduleCalculations() {
     const weeklyTarget = parseDecimal(row.dataset.weeklyTarget);
     const dailyMax = parseDecimal(row.dataset.dailyMax);
     const baseWorkDays = Number.parseInt(row.dataset.baseWorkDays || `${defaultBaseWorkDays}`, 10) || defaultBaseWorkDays;
+    const scopeIndexes = new Set(
+      String(row.dataset.scopeIndexes || "0,1,2,3,4,5,6")
+        .split(",")
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => Number.isInteger(value)),
+    );
     const priorDayBalance = roundHours(parseDecimal(row.dataset.priorDayBalance));
     const priorHourBalance = clampNonNegative(parseDecimal(row.dataset.priorHourBalance));
     const dayReferenceHours = parseDecimal(row.dataset.dayReferenceHours);
@@ -1133,7 +1141,7 @@ function initScheduleCalculations() {
         });
       });
 
-      const expectedPlan = buildExpectedPlan(rawDayStates, effectiveWeeklyTarget, baseWorkDays);
+      const expectedPlan = buildExpectedPlan(rawDayStates, effectiveWeeklyTarget, baseWorkDays, scopeIndexes);
       const dayStates = expectedPlan.dayStates;
       dayStates.forEach((dayState) => {
         if (dayState.modeValue === "pay_hours") {

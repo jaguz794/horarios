@@ -33,6 +33,7 @@ from schedules.services import (
     get_selected_shift_templates,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
+    get_schedule_line_scope_indexes,
     get_schedule_line_status_blocker_message,
     recalculate_schedule_line,
     resolve_compensation_usage,
@@ -398,11 +399,16 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         self.show_admin_fields = show_admin_fields
         self.config = config or SystemConfiguration.load()
         self.shift_template_map = shift_template_map
-        self.scope_indexes = scope_indexes
         self.rest_shift_label = rest_shift_label
         super().__init__(*args, **kwargs)
         if self.schedule is not None and getattr(self.instance, "schedule_id", None) is None:
             self.instance.schedule = self.schedule
+        self.scope_indexes = (
+            set(scope_indexes)
+            if scope_indexes is not None
+            else get_schedule_line_scope_indexes(self.instance)
+        )
+        self.scope_indexes_csv = ",".join(str(index) for index in sorted(self.scope_indexes))
         self.overtime_restriction = overtime_restriction
         if self.overtime_restriction is None:
             self.overtime_restriction = get_active_overtime_restriction(self.instance.employee_identifier)
@@ -505,6 +511,20 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
         for field_name in self.INVENTORY_FIELDS:
             self.fields[field_name].widget.attrs["class"] = "inventory-checkbox"
             self.fields[field_name].widget.attrs["data-inventory-checkbox"] = "true"
+
+        if self.scope_indexes != set(range(7)):
+            for index in range(7):
+                if index in self.scope_indexes:
+                    continue
+                for field_name in (
+                    f"day_{index}_shift_1",
+                    f"day_{index}_shift_2",
+                    f"day_{index}_compensation_mode",
+                    f"day_{index}_compensation_hours",
+                    f"day_{index}_inventory",
+                ):
+                    self.fields[field_name].disabled = True
+                    self.fields[field_name].widget.attrs["data-scope-disabled"] = "true"
 
         if not self.show_admin_fields:
             self.fields["manual_day_adjustment"].widget = forms.HiddenInput()

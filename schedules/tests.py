@@ -34,6 +34,7 @@ from schedules.services import (
     get_rest_shift_label,
     get_schedule_line_compact_alert_summary,
     get_schedule_line_balance_snapshot,
+    get_schedule_line_scope_indexes,
     import_employee_initial_balances,
     parse_shift_hours,
     recalculate_schedule_line,
@@ -1505,6 +1506,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
         week_start: date,
         employee_identifier: str,
         weekly_target_hours: Decimal,
+        site: Site | None = None,
         shift_map: dict[int, str] | None = None,
         second_shift_map: dict[int, str] | None = None,
         compensation_map: dict[int, str] | None = None,
@@ -1512,7 +1514,7 @@ class ProportionalWeeklyBalanceTests(TestCase):
         daily_max_hours: Decimal = Decimal("9.00"),
     ) -> ScheduleLine:
         schedule = WeeklySchedule.objects.create(
-            site=self.site,
+            site=site or self.site,
             week_start_date=week_start,
             first_day_index=SystemConfiguration.SUNDAY,
         )
@@ -1598,6 +1600,94 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
         self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
         self.assertEqual(ScheduleBalanceMovement.objects.filter(schedule=line.schedule).count(), 0)
+
+    def test_prestamo_requires_other_site_hours_until_destination_is_programmed(self):
+        self.ensure_holiday(date(2026, 6, 29), "Festivo lunes")
+        origin_line = self.build_line(
+            week_start=date(2026, 6, 28),
+            employee_identifier="PRESTAMO1",
+            weekly_target_hours=Decimal("44.00"),
+            shift_map={
+                0: "08:00-16:00",
+                1: "descanso",
+                2: "08:00-14:00",
+                3: "descanso",
+                4: "08:00-14:00",
+                5: "prestamo",
+                6: "08:00-16:00",
+            },
+            compensation_map={3: ScheduleLine.CompensationMode.PAY_DAY},
+        )
+
+        self.rebuild_employee(origin_line.schedule.week_start_date, origin_line.employee_identifier)
+        origin_line.refresh_from_db()
+
+        self.assertEqual(origin_line.expected_weekly_hours, Decimal("36.50"))
+        self.assertEqual(origin_line.total_hours, Decimal("28.00"))
+        self.assertEqual(origin_line.weekly_hour_difference, Decimal("-8.50"))
+        self.assertTrue(schedule_line_blocks_status_transition(origin_line))
+
+    def test_prestamo_uses_same_week_other_site_hours_for_weekly_validation(self):
+        self.ensure_holiday(date(2026, 6, 29), "Festivo lunes")
+        destination_site = Site.objects.create(code="043", name="SALADO")
+        origin_line = self.build_line(
+            week_start=date(2026, 6, 28),
+            employee_identifier="PRESTAMO2",
+            weekly_target_hours=Decimal("44.00"),
+            shift_map={
+                0: "08:00-16:00",
+                1: "descanso",
+                2: "08:00-14:00",
+                3: "descanso",
+                4: "08:00-14:00",
+                5: "prestamo",
+                6: "08:00-16:00",
+            },
+            compensation_map={3: ScheduleLine.CompensationMode.PAY_DAY},
+        )
+        destination_line = self.build_line(
+            site=destination_site,
+            week_start=origin_line.schedule.week_start_date,
+            employee_identifier=origin_line.employee_identifier,
+            weekly_target_hours=Decimal("44.00"),
+            shift_map={5: "08:00-16:00"},
+        )
+
+        self.rebuild_employee(origin_line.schedule.week_start_date, origin_line.employee_identifier)
+        origin_line.refresh_from_db()
+        destination_line.refresh_from_db()
+
+        self.assertEqual(origin_line.expected_weekly_hours, Decimal("36.50"))
+        self.assertEqual(origin_line.total_hours, Decimal("28.00"))
+        self.assertEqual(origin_line.weekly_hour_difference, Decimal("-0.50"))
+        self.assertFalse(schedule_line_blocks_status_transition(origin_line))
+        self.assertIn("Horas de prestamo en otra sede: 8.00 h", origin_line.validation_summary)
+        self.assertEqual(get_schedule_line_scope_indexes(destination_line), {5})
+        self.assertEqual(destination_line.expected_weekly_hours, Decimal("7.50"))
+        self.assertEqual(destination_line.total_hours, Decimal("8.00"))
+        self.assertFalse(schedule_line_blocks_status_transition(destination_line))
+
+    def test_prestamo_destination_form_disables_days_outside_loan_scope(self):
+        destination_site = Site.objects.create(code="044", name="SALADO.N")
+        origin_line = self.build_line(
+            week_start=date(2026, 9, 6),
+            employee_identifier="PRESTAMO3",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={5: "prestamo"},
+        )
+        destination_line = self.build_line(
+            site=destination_site,
+            week_start=origin_line.schedule.week_start_date,
+            employee_identifier=origin_line.employee_identifier,
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={5: "09:00-16:00"},
+        )
+
+        form = ScheduleLineForm(instance=destination_line, schedule=destination_line.schedule)
+
+        self.assertEqual(form.scope_indexes, {5})
+        self.assertTrue(form.fields["day_0_shift_1"].disabled)
+        self.assertFalse(form.fields["day_5_shift_1"].disabled)
 
     def test_paid_hours_count_for_weekly_journey_without_generating_new_overtime(self):
         EmployeeInitialBalance.objects.create(
