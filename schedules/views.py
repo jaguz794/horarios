@@ -40,6 +40,7 @@ from schedules.services import (
     purge_blacklisted_lines_from_schedule,
     recalculate_schedule_line,
     rebuild_balances_for_employees_from_week,
+    release_schedule_line_balance_reversal_links,
     release_schedule_balance_reversal_links,
     schedule_accepts_blacklisted_staff,
     schedule_line_blocks_status_transition,
@@ -251,8 +252,10 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             line = get_object_or_404(ScheduleLine.objects.filter(schedule=schedule), pk=remove_line_id)
             employee_name = line.employee_name
             employee_identifier = line.employee_identifier
-            line.delete()
-            rebuild_balances_for_employees_from_week(schedule.week_start_date, [employee_identifier])
+            with transaction.atomic():
+                release_schedule_line_balance_reversal_links(line)
+                line.delete()
+                rebuild_balances_for_employees_from_week(schedule.week_start_date, [employee_identifier])
             messages.success(
                 request,
                 f"Trabajador retirado del horario: {employee_name}.",

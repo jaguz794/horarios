@@ -3468,6 +3468,99 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertEqual(response.url, reverse("schedules:edit", kwargs={"pk": self.schedule.pk}))
         self.assertFalse(ScheduleLine.objects.filter(pk=self.line.pk).exists())
 
+    def test_site_user_can_remove_schedule_line_with_reversal_movements(self):
+        original_movement = ScheduleBalanceMovement.objects.create(
+            schedule=self.schedule,
+            line=self.line,
+            site=self.site,
+            employee_identifier=self.line.employee_identifier,
+            employee_name=self.line.employee_name,
+            movement_date=self.schedule.week_start_date,
+            movement_type=ScheduleBalanceMovement.MovementType.SPECIAL_DAY,
+            quantity_days=Decimal("1.00"),
+            balance_before_days=Decimal("0.00"),
+            balance_after_days=Decimal("1.00"),
+            idempotency_key="remove-line-original",
+            description="Domingo laborado",
+        )
+        ScheduleBalanceMovement.objects.create(
+            schedule=self.schedule,
+            line=self.line,
+            site=self.site,
+            employee_identifier=self.line.employee_identifier,
+            employee_name=self.line.employee_name,
+            movement_date=self.schedule.week_end_date,
+            movement_type=ScheduleBalanceMovement.MovementType.REVERSAL,
+            quantity_days=Decimal("-1.00"),
+            balance_before_days=Decimal("1.00"),
+            balance_after_days=Decimal("0.00"),
+            idempotency_key="remove-line-original:reversal",
+            is_reversal=True,
+            reversed_movement=original_movement,
+            description="Reverso de domingo o festivo laborado",
+        )
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            {
+                "remove_line_id": str(self.line.pk),
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(ScheduleLine.objects.filter(pk=self.line.pk).exists())
+        self.assertFalse(ScheduleBalanceMovement.objects.filter(schedule=self.schedule).exists())
+
+    def test_blacklist_purge_can_remove_schedule_line_with_reversal_movements(self):
+        EmployeeScheduleBlacklist.objects.create(
+            employee_identifier=self.line.employee_identifier,
+            employee_name=self.line.employee_name,
+        )
+        original_movement = ScheduleBalanceMovement.objects.create(
+            schedule=self.schedule,
+            line=self.line,
+            site=self.site,
+            employee_identifier=self.line.employee_identifier,
+            employee_name=self.line.employee_name,
+            movement_date=self.schedule.week_start_date,
+            movement_type=ScheduleBalanceMovement.MovementType.SPECIAL_DAY,
+            quantity_days=Decimal("1.00"),
+            balance_before_days=Decimal("0.00"),
+            balance_after_days=Decimal("1.00"),
+            idempotency_key="purge-line-original",
+            description="Domingo laborado",
+        )
+        ScheduleBalanceMovement.objects.create(
+            schedule=self.schedule,
+            line=self.line,
+            site=self.site,
+            employee_identifier=self.line.employee_identifier,
+            employee_name=self.line.employee_name,
+            movement_date=self.schedule.week_end_date,
+            movement_type=ScheduleBalanceMovement.MovementType.REVERSAL,
+            quantity_days=Decimal("-1.00"),
+            balance_before_days=Decimal("1.00"),
+            balance_after_days=Decimal("0.00"),
+            idempotency_key="purge-line-original:reversal",
+            is_reversal=True,
+            reversed_movement=original_movement,
+            description="Reverso de domingo o festivo laborado",
+        )
+        self.client.login(username="operador_delete", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(ScheduleLine.objects.filter(pk=self.line.pk).exists())
+        self.assertFalse(ScheduleBalanceMovement.objects.filter(schedule=self.schedule).exists())
+
     @patch(
         "schedules.views.lookup_third_party_by_identifier",
         return_value=LegacyThirdPartyRecord(

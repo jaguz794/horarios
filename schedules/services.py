@@ -3063,6 +3063,28 @@ def release_schedule_balance_reversal_links(schedule: WeeklySchedule) -> int:
     ).update(reversed_movement=None)
 
 
+def release_schedule_lines_balance_reversal_links(lines) -> int:
+    line_ids = list(lines.values_list("pk", flat=True))
+    if not line_ids:
+        return 0
+
+    movement_ids = list(
+        ScheduleBalanceMovement.objects.filter(line_id__in=line_ids).values_list("pk", flat=True)
+    )
+    if not movement_ids:
+        return 0
+
+    return ScheduleBalanceMovement.objects.filter(
+        reversed_movement_id__in=movement_ids,
+    ).update(reversed_movement=None)
+
+
+def release_schedule_line_balance_reversal_links(line: ScheduleLine) -> int:
+    return release_schedule_lines_balance_reversal_links(
+        ScheduleLine.objects.filter(pk=line.pk)
+    )
+
+
 def rebuild_balances_for_employees_from_week(
     week_start_date: date,
     employee_identifiers: list[str] | set[str] | tuple[str, ...] | None = None,
@@ -3205,7 +3227,9 @@ def purge_blacklisted_lines_from_schedule(schedule: WeeklySchedule) -> list[str]
     if not blacklisted_identifiers:
         return []
 
-    schedule.lines.filter(employee_identifier__in=blacklisted_identifiers).delete()
+    blacklisted_lines = schedule.lines.filter(employee_identifier__in=blacklisted_identifiers)
+    release_schedule_lines_balance_reversal_links(blacklisted_lines)
+    blacklisted_lines.delete()
     rebuild_balances_for_employees_from_week(schedule.week_start_date, list(blacklisted_identifiers))
     return sorted(blacklisted_identifiers)
 
