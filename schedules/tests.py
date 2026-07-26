@@ -1789,6 +1789,69 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertTrue(form.fields["day_0_shift_1"].disabled)
         self.assertFalse(form.fields["day_5_shift_1"].disabled)
 
+    def test_traslado_destination_empty_line_enables_only_transferred_days(self):
+        destination_site = Site.objects.create(code="045", name="JARDIN.N")
+        origin_line = self.build_line(
+            week_start=date(2026, 7, 19),
+            employee_identifier="1079178561",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                0: "descanso",
+                1: "09:00-14:00",
+                2: "09:00-14:00",
+                3: "traslado",
+                4: "traslado",
+                5: "traslado",
+                6: "traslado",
+            },
+            second_shift_map={
+                1: "17:00-21:00",
+                2: "17:00-21:00",
+            },
+        )
+        destination_line = self.build_line(
+            site=destination_site,
+            week_start=origin_line.schedule.week_start_date,
+            employee_identifier=origin_line.employee_identifier,
+            weekly_target_hours=Decimal("42.00"),
+        )
+
+        form = ScheduleLineForm(instance=destination_line, schedule=destination_line.schedule)
+
+        self.assertEqual(get_schedule_line_scope_indexes(destination_line), {3, 4, 5, 6})
+        self.assertEqual(form.scope_indexes, {3, 4, 5, 6})
+        self.assertTrue(form.fields["day_0_shift_1"].disabled)
+        self.assertTrue(form.fields["day_2_shift_1"].disabled)
+        self.assertFalse(form.fields["day_3_shift_1"].disabled)
+        self.assertFalse(form.fields["day_6_shift_1"].disabled)
+
+    def test_traslado_origin_reduces_journey_without_moving_balance(self):
+        line = self.build_line(
+            week_start=date(2026, 7, 19),
+            employee_identifier="TRASLADO1",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                0: "descanso",
+                1: "09:00-14:00",
+                2: "09:00-14:00",
+                3: "traslado",
+                4: "traslado",
+                5: "traslado",
+                6: "traslado",
+            },
+            second_shift_map={
+                1: "17:00-21:00",
+                2: "17:00-21:00",
+            },
+        )
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.expected_work_days, 2)
+        self.assertEqual(line.accrued_day_balance, Decimal("0.00"))
+        self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
+
     def test_paid_hours_count_for_weekly_journey_without_generating_new_overtime(self):
         EmployeeInitialBalance.objects.create(
             employee_identifier="4210",

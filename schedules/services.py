@@ -52,6 +52,7 @@ NON_WORKED_SHIFT_LABELS = {
 }
 REST_SHIFT_LABEL = "descanso"
 LOAN_SHIFT_LABELS = {"prestamo"}
+TRANSFER_SHIFT_LABELS = {"traslado"}
 SHIFT_PATTERN = re.compile(r"^(?P<start>\d{1,2}:\d{2})-(?P<end>\d{1,2}:\d{2})$")
 TWO_DECIMALS = Decimal("0.01")
 
@@ -1120,6 +1121,24 @@ def get_schedule_line_loan_indexes(line: ScheduleLine) -> set[int]:
     }
 
 
+def schedule_line_has_transfer_marker_on_day(line: ScheduleLine, index: int) -> bool:
+    shift_1_label = getattr(line, f"day_{index}_shift_1", "") or ""
+    shift_2_label = getattr(line, f"day_{index}_shift_2", "") or ""
+    return any(
+        normalize_shift_key(label) in TRANSFER_SHIFT_LABELS
+        for label in (shift_1_label, shift_2_label)
+        if normalize_shift_label(label)
+    )
+
+
+def get_schedule_line_transfer_indexes(line: ScheduleLine) -> set[int]:
+    return {
+        index
+        for index in range(7)
+        if schedule_line_has_transfer_marker_on_day(line, index)
+    }
+
+
 def get_schedule_line_progression_key(line: ScheduleLine) -> tuple[date, int, int, datetime, int, int]:
     schedule = getattr(line, "schedule", None)
     week_start = getattr(schedule, "week_start_date", None) or date.min
@@ -1173,6 +1192,20 @@ def get_schedule_line_scope_indexes(line: ScheduleLine) -> set[int]:
             matched_indexes = current_activity_indexes & other_loan_indexes
             return matched_indexes or other_loan_indexes
         return set(other_loan_indexes)
+
+    current_transfer_indexes = get_schedule_line_transfer_indexes(line)
+    other_transfer_indexes: set[int] = set()
+    for candidate in ordered_lines:
+        if getattr(candidate, "pk", None) == getattr(line, "pk", None):
+            continue
+        other_transfer_indexes.update(get_schedule_line_transfer_indexes(candidate))
+
+    if other_transfer_indexes and not current_transfer_indexes:
+        current_activity_indexes = set(get_schedule_line_activity_indices(line))
+        if current_activity_indexes:
+            matched_indexes = current_activity_indexes & other_transfer_indexes
+            return matched_indexes or other_transfer_indexes
+        return set(other_transfer_indexes)
 
     activity_meta = [
         {
