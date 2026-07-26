@@ -34,6 +34,7 @@ from schedules.services import (
     get_rest_shift_label,
     get_schedule_line_compact_alert_summary,
     get_schedule_line_balance_snapshot,
+    get_schedule_line_external_day_context_by_index,
     get_schedule_line_scope_indexes,
     import_employee_initial_balances,
     parse_shift_hours,
@@ -1790,13 +1791,15 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertFalse(form.fields["day_5_shift_1"].disabled)
 
     def test_traslado_destination_empty_line_enables_only_transferred_days(self):
-        destination_site = Site.objects.create(code="045", name="JARDIN.N")
+        origin_site = Site.objects.create(code="014", name="JARDIN.N")
+        destination_site = Site.objects.create(code="005", name="CHAPINERO")
         origin_line = self.build_line(
+            site=origin_site,
             week_start=date(2026, 7, 19),
             employee_identifier="1079178561",
             weekly_target_hours=Decimal("42.00"),
             shift_map={
-                0: "descanso",
+                0: "14:00-21:00",
                 1: "09:00-14:00",
                 2: "09:00-14:00",
                 3: "traslado",
@@ -1824,6 +1827,29 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertTrue(form.fields["day_2_shift_1"].disabled)
         self.assertFalse(form.fields["day_3_shift_1"].disabled)
         self.assertFalse(form.fields["day_6_shift_1"].disabled)
+
+        external_context = get_schedule_line_external_day_context_by_index(
+            destination_line,
+            scope_indexes=form.scope_indexes,
+        )
+        self.assertEqual(form.external_day_context_by_index[0]["site_label"], "014 JARDIN.N")
+        self.assertEqual(external_context[0]["shift_labels"], ["14:00-21:00"])
+        self.assertTrue(external_context[0]["is_out_of_scope"])
+        self.assertEqual(external_context[1]["shift_labels"], ["09:00-14:00", "17:00-21:00"])
+        self.assertTrue(external_context[1]["is_out_of_scope"])
+        self.assertEqual(external_context[3]["shift_labels"], ["traslado"])
+        self.assertFalse(external_context[3]["is_out_of_scope"])
+
+        expected_plan = build_expected_week_plan(destination_line, scope_indexes=form.scope_indexes)
+        expected_reasons = {
+            int(day_plan["index"]): day_plan["expected_reason"]
+            for day_plan in expected_plan["day_plans"]
+        }
+        self.assertEqual(expected_plan["expected_work_days"], 4)
+        self.assertEqual(expected_reasons[0], "fuera_de_rango")
+        self.assertEqual(expected_reasons[1], "fuera_de_rango")
+        self.assertEqual(expected_reasons[2], "fuera_de_rango")
+        self.assertEqual(expected_reasons[3], "laborable")
 
     def test_traslado_origin_reduces_journey_without_moving_balance(self):
         line = self.build_line(

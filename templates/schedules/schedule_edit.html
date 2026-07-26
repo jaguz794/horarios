@@ -259,7 +259,7 @@
               {% endif %}
             </td>
             {% for column in day_columns %}
-            {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name inventory_field=line_form|form_field:column.inventory_name %}
+            {% with shift_1=line_form|form_field:column.shift_1_name shift_2=line_form|form_field:column.shift_2_name compensation_mode=line_form|form_field:column.compensation_mode_name compensation_hours=line_form|form_field:column.compensation_hours_name inventory_field=line_form|form_field:column.inventory_name external_day=line_form.external_day_context_by_index|dict_get:column.index %}
             <td
               class="schedule-day-cell"
               data-day-index="{{ column.index }}"
@@ -267,6 +267,26 @@
               data-special-day="{{ column.special_label }}"
             >
               <div class="turn-cell">
+                {% if external_day and external_day.is_out_of_scope %}
+                <div class="external-day-context external-day-context--locked">
+                  <small>Solo lectura</small>
+                  <strong>{{ external_day.site_label }}</strong>
+                  {% for shift_label in external_day.shift_labels %}
+                  <span>{{ shift_label }}</span>
+                  {% endfor %}
+                  {% if external_day.compensation_label %}
+                  <span>{{ external_day.compensation_label }}{% if external_day.compensation_hours %} {{ external_day.compensation_hours|hours_int }} h{% endif %}</span>
+                  {% endif %}
+                  <em>{{ external_day.hours|hours_int }} h en otra sede</em>
+                </div>
+                <div class="turn-cell-fields turn-cell-fields--hidden" aria-hidden="true">
+                  {{ shift_1 }}
+                  {{ shift_2 }}
+                  {{ compensation_mode }}
+                  {{ compensation_hours }}
+                  {{ inventory_field }}
+                </div>
+                {% else %}
                 {{ shift_1 }}
                 {{ shift_2 }}
                 <div class="day-payment">
@@ -288,6 +308,14 @@
                 <small class="day-hours" data-day-hours>{{ line_form.instance|attr:column.hours_attr|hours_int }} h</small>
                 {% if show_night_hours %}
                 <small class="day-night" data-day-night></small>
+                {% endif %}
+                {% if external_day %}
+                <small class="external-day-context external-day-context--reference">
+                  Referencia {{ external_day.site_label }}:
+                  {% for shift_label in external_day.shift_labels %}{{ shift_label }}{% if not forloop.last %} / {% endif %}{% endfor %}
+                  {% if external_day.compensation_label %} {{ external_day.compensation_label }}{% endif %}
+                </small>
+                {% endif %}
                 {% endif %}
               </div>
             </td>

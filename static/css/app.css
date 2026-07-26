@@ -859,6 +859,10 @@ textarea:focus {
   align-content: start;
 }
 
+.turn-cell-fields--hidden {
+  display: none;
+}
+
 .turn-cell .input,
 .turn-cell .input--compact,
 .turn-cell select {
@@ -945,6 +949,46 @@ textarea:focus {
 
 .payment-info[hidden] {
   display: none;
+}
+
+.external-day-context {
+  display: grid;
+  gap: 3px;
+  line-height: 1.25;
+}
+
+.external-day-context--locked {
+  padding: 8px;
+  border: 1px dashed rgba(8, 111, 55, 0.32);
+  border-radius: 12px;
+  background: rgba(241, 246, 212, 0.72);
+  color: var(--brand-green-dark);
+}
+
+.external-day-context--locked strong,
+.external-day-context--locked span,
+.external-day-context--locked em {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.external-day-context--locked strong {
+  font-size: 0.75rem;
+}
+
+.external-day-context--locked span {
+  font-size: 0.8rem;
+}
+
+.external-day-context--locked em {
+  font-style: normal;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.external-day-context--reference {
+  padding-top: 2px;
+  color: var(--muted);
 }
 
 .turn-cell small,

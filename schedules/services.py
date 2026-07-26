@@ -1139,6 +1139,90 @@ def get_schedule_line_transfer_indexes(line: ScheduleLine) -> set[int]:
     }
 
 
+def get_schedule_line_external_day_context_by_index(
+    line: ScheduleLine,
+    *,
+    config: SystemConfiguration | None = None,
+    scope_indexes: set[int] | None = None,
+) -> dict[int, dict[str, object]]:
+    schedule = getattr(line, "schedule", None)
+    employee_identifier = (getattr(line, "employee_identifier", "") or "").strip()
+    if schedule is None or not schedule.week_start_date or not employee_identifier:
+        return {}
+
+    config = config or SystemConfiguration.load()
+    scope_indexes = scope_indexes if scope_indexes is not None else get_schedule_line_scope_indexes(line)
+    same_week_lines = list(
+        ScheduleLine.objects.select_related("schedule", "schedule__site")
+        .filter(
+            employee_identifier=employee_identifier,
+            schedule__week_start_date=schedule.week_start_date,
+        )
+        .exclude(pk=getattr(line, "pk", None))
+    )
+    contexts: dict[int, dict[str, object]] = {}
+    context_priorities: dict[int, tuple[int, tuple[date, int, int, datetime, int, int]]] = {}
+    compensation_labels = dict(ScheduleLine.CompensationMode.choices)
+
+    for candidate in sorted(same_week_lines, key=get_schedule_line_progression_key):
+        candidate_templates = get_selected_shift_templates(candidate)
+        candidate_breakdown = build_line_day_breakdown(
+            candidate,
+            config=config,
+            shift_templates=candidate_templates,
+        )
+        candidate_breakdown_by_index = {
+            int(day_info["index"]): day_info
+            for day_info in candidate_breakdown
+        }
+        candidate_key = get_schedule_line_progression_key(candidate)
+        candidate_site = getattr(getattr(candidate, "schedule", None), "site", None)
+        site_parts = [
+            str(getattr(candidate_site, "code", "") or "").strip(),
+            str(getattr(candidate_site, "name", "") or "").strip(),
+        ]
+        site_label = " ".join(part for part in site_parts if part) or "otra sede"
+
+        for index in range(7):
+            day_info = candidate_breakdown_by_index.get(index)
+            if day_info is None:
+                continue
+            shift_labels = [
+                normalize_shift_label(getattr(candidate, f"day_{index}_shift_{slot}", "") or "")
+                for slot in (1, 2)
+            ]
+            shift_labels = [label for label in shift_labels if label]
+            compensation_mode = str(getattr(candidate, f"day_{index}_compensation_mode", "") or "").strip()
+            compensation_hours = decimal_hours(
+                getattr(candidate, f"day_{index}_compensation_hours", Decimal("0.00")) or "0"
+            )
+            worked_hours = decimal_hours(day_info.get("worked_hours", Decimal("0.00")))
+            has_activity = bool(shift_labels or compensation_mode or compensation_hours != Decimal("0.00"))
+            if not has_activity:
+                continue
+
+            priority = 0 if worked_hours > Decimal("0.00") else 1 if compensation_mode else 2
+            priority_key = (priority, candidate_key)
+            if index in contexts and priority_key >= context_priorities[index]:
+                continue
+
+            contexts[index] = {
+                "index": index,
+                "site_label": site_label,
+                "shift_labels": shift_labels,
+                "compensation_label": compensation_labels.get(compensation_mode, "") if compensation_mode else "",
+                "compensation_hours": compensation_hours,
+                "hours": worked_hours,
+                "night_hours": decimal_hours(day_info.get("night_hours", Decimal("0.00"))),
+                "is_out_of_scope": index not in scope_indexes,
+                "is_transfer_marker": schedule_line_has_transfer_marker_on_day(candidate, index),
+                "is_loan_marker": schedule_line_has_loan_marker_on_day(candidate, index),
+            }
+            context_priorities[index] = priority_key
+
+    return contexts
+
+
 def get_schedule_line_progression_key(line: ScheduleLine) -> tuple[date, int, int, datetime, int, int]:
     schedule = getattr(line, "schedule", None)
     week_start = getattr(schedule, "week_start_date", None) or date.min

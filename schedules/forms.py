@@ -34,6 +34,7 @@ from schedules.services import (
     get_selected_shift_templates,
     get_schedule_line_balance_snapshot,
     get_schedule_line_compact_alert_summary,
+    get_schedule_line_external_day_context_by_index,
     get_schedule_line_external_loan_hours_by_index,
     get_schedule_line_scope_indexes,
     get_schedule_line_status_blocker_message,
@@ -420,6 +421,11 @@ class ScheduleLineForm(StyledFormMixin, forms.ModelForm):
                 str(index): str(hours)
                 for index, hours in sorted(self.external_loan_hours_by_index.items())
             }
+        )
+        self.external_day_context_by_index = get_schedule_line_external_day_context_by_index(
+            self.instance,
+            config=self.config,
+            scope_indexes=self.scope_indexes,
         )
         self.overtime_restriction = overtime_restriction
         if self.overtime_restriction is None:

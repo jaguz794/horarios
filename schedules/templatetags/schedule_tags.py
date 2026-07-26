@@ -15,6 +15,15 @@ def attr(instance, name):
 
 
 @register.filter
+def dict_get(mapping, key):
+    if not mapping:
+        return None
+    if hasattr(mapping, "get"):
+        return mapping.get(key) or mapping.get(str(key))
+    return None
+
+
+@register.filter
 def hours_int(value):
     try:
         decimal_value = Decimal(str(value)).normalize()
