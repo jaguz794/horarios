@@ -222,6 +222,7 @@ function initScheduleCalculations() {
       return 0;
     }
 
+    let nonWorkedLeaveCandidateIndex = null;
     for (const dayState of dayStates) {
       if (dayState.dayIndex === 0) {
         continue;
@@ -238,9 +239,15 @@ function initScheduleCalculations() {
       ) {
         return dayState.dayIndex;
       }
+      if (
+        nonWorkedLeaveCandidateIndex === null
+        && (dayState.shiftCategories.has("leave") || dayState.shiftCategories.has("loan"))
+      ) {
+        nonWorkedLeaveCandidateIndex = dayState.dayIndex;
+      }
     }
 
-    return 0;
+    return nonWorkedLeaveCandidateIndex ?? 0;
   };
 
   const buildExpectedPlan = (dayStates, weeklyTargetValue, baseWorkDaysValue, scopeIndexes = null) => {

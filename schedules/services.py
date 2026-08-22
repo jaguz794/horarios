@@ -830,6 +830,7 @@ def get_weekly_rest_day_index(
         return 0
 
     candidate_indexes: list[int] = []
+    non_worked_leave_candidate_indexes: list[int] = []
     for day_info in day_breakdown:
         index = int(day_info["index"])
         if index == 0:
@@ -849,9 +850,13 @@ def get_weekly_rest_day_index(
             *ADVANCE_DAY_COMPENSATION_MODES,
         }:
             candidate_indexes.append(index)
+        elif "leave" in shift_categories or "loan" in shift_categories:
+            non_worked_leave_candidate_indexes.append(index)
 
     if candidate_indexes:
         return min(candidate_indexes)
+    if non_worked_leave_candidate_indexes:
+        return min(non_worked_leave_candidate_indexes)
 
     return 0
 

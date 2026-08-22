@@ -1952,6 +1952,45 @@ class ProportionalWeeklyBalanceTests(TestCase):
         self.assertEqual(line.accrued_hour_balance, Decimal("0.00"))
         self.assertEqual(line.validation_status, ScheduleLine.ValidationStatus.VALID)
 
+    def test_worked_sunday_and_holiday_with_incapacity_rest_does_not_overplan(self):
+        self.ensure_holiday(date(2026, 8, 17), "Festivo lunes")
+        line = self.build_line(
+            week_start=date(2026, 8, 16),
+            employee_identifier="4212",
+            weekly_target_hours=Decimal("42.00"),
+            shift_map={
+                0: "09:00-13:00",
+                1: "10:00-14:00",
+                2: "incapacidad",
+                3: "incapacidad",
+                4: "incapacidad",
+                5: "incapacidad",
+                6: "incapacidad",
+            },
+            second_shift_map={
+                0: "18:00-21:00",
+                1: "18:00-21:00",
+            },
+            daily_max_hours=Decimal("9.00"),
+        )
+
+        expected_plan = build_expected_week_plan(line)
+        self.assertEqual(expected_plan["mandatory_rest_index"], 2)
+        self.assertEqual(expected_plan["expected_work_days"], 2)
+        self.assertEqual(expected_plan["expected_weekly_hours"], Decimal("14.00"))
+
+        self.rebuild_employee(line.schedule.week_start_date, line.employee_identifier)
+        line.refresh_from_db()
+
+        self.assertEqual(line.total_hours, Decimal("14.00"))
+        self.assertEqual(line.special_days_generated, 2)
+        self.assertEqual(line.accrued_day_balance, Decimal("2.00"))
+        self.assertEqual(line.weekly_hour_difference, Decimal("0.00"))
+        self.assertEqual(line.overtime_hours, Decimal("0.00"))
+        self.assertEqual(line.validation_status, ScheduleLine.ValidationStatus.VALID)
+        self.assertIn("1 dia(s) generado(s) por domingo trabajado", line.validation_summary)
+        self.assertIn("1 dia(s) generado(s) por festivo trabajado", line.validation_summary)
+
     def test_sunday_and_holiday_generate_days_and_weekly_rest_pay_day_consumes_one(self):
         self.ensure_holiday(date(2026, 7, 13), "Festivo lunes")
         line = self.build_line(
