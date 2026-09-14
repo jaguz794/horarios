@@ -10,7 +10,12 @@ from django.urls import reverse
 from openpyxl import load_workbook
 
 from core.admin import UserSiteAccessAdmin
-from core.access import get_accessible_sites_queryset, user_can_manage_all_sites
+from core.access import (
+    get_accessible_sites_queryset,
+    user_can_audit_all_sites,
+    user_can_edit_schedules,
+    user_can_manage_all_sites,
+)
 from core.models import Holiday, Site, UserSiteAccess
 from schedules.models import EmployeeInitialBalance, ScheduleLine, WeeklySchedule
 from schedules.calendar_utils import get_special_day_label, is_colombian_holiday
@@ -78,6 +83,31 @@ class UserSiteAccessTests(TestCase):
         )
 
         self.assertNotIn(Site.PERSONAL_VARIO_CODE, visible_codes)
+
+    def test_auditor_role_sees_all_regular_sites_without_edit_permissions(self):
+        Site.objects.get_or_create(
+            code=Site.PERSONAL_VARIO_CODE,
+            defaults={
+                "name": Site.PERSONAL_VARIO_NAME,
+                "admin_only": True,
+                "is_active": True,
+            },
+        )
+        user = User.objects.create_user(username="consulta", password="secret")
+        access = UserSiteAccess.objects.get(user=user)
+        access.role = UserSiteAccess.Role.AUDITOR
+        access.save()
+
+        visible_codes = list(
+            get_accessible_sites_queryset(user).order_by("code").values_list("code", flat=True)
+        )
+
+        self.assertIn("007", visible_codes)
+        self.assertIn("008", visible_codes)
+        self.assertNotIn(Site.PERSONAL_VARIO_CODE, visible_codes)
+        self.assertFalse(user_can_manage_all_sites(user))
+        self.assertTrue(user_can_audit_all_sites(user))
+        self.assertFalse(user_can_edit_schedules(user))
 
 
 class DashboardViewTests(TestCase):
@@ -332,6 +362,30 @@ class ReportHubViewTests(TestCase):
         self.assertEqual(worksheet["C2"].value, "JARDIN.I")
         self.assertEqual(worksheet["D2"].value, "5001")
         self.assertEqual(worksheet["F2"].value, "AUXILIAR")
+
+    def test_auditor_can_export_administrative_reports(self):
+        auditor = User.objects.create_user(username="auditor_reports", password="secret")
+        access = UserSiteAccess.objects.get(user=auditor)
+        access.role = UserSiteAccess.Role.AUDITOR
+        access.save()
+        self.client.login(username="auditor_reports", password="secret")
+
+        response = self.client.post(
+            reverse("reports"),
+            {
+                "range-date_from": "2026-07-05",
+                "range-date_to": "2026-07-11",
+                "report_type": "night_bonus",
+            },
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     def test_reports_can_export_weekly_balance_with_day_and_hour_columns(self):
         line = self.schedule.lines.order_by("employee_identifier").first()

@@ -20,6 +20,24 @@ def user_can_manage_all_sites(user) -> bool:
     return bool(access and access.can_manage_all_sites)
 
 
+def user_can_audit_all_sites(user) -> bool:
+    if not getattr(user, "is_authenticated", False):
+        return False
+    if user.is_superuser:
+        return True
+    access = get_user_site_access(user)
+    return bool(access and access.can_audit_all_sites)
+
+
+def user_can_edit_schedules(user) -> bool:
+    if not getattr(user, "is_authenticated", False):
+        return False
+    if user.is_superuser:
+        return True
+    access = get_user_site_access(user)
+    return bool(access and access.role != UserSiteAccess.Role.AUDITOR)
+
+
 def user_can_delete_schedules(user) -> bool:
     return user_can_manage_all_sites(user)
 
@@ -28,6 +46,8 @@ def get_accessible_sites_queryset(user, base_queryset: QuerySet | None = None) -
     queryset = base_queryset if base_queryset is not None else Site.objects.all()
     if user_can_manage_all_sites(user):
         return queryset
+    if user_can_audit_all_sites(user):
+        return queryset.filter(admin_only=False).distinct()
 
     access = get_user_site_access(user)
     if not access:

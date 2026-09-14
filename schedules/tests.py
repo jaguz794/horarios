@@ -3456,6 +3456,97 @@ class ScheduleDeleteViewTests(TestCase):
         self.assertNotContains(response, "plain-action-button")
         self.assertNotContains(response, "Eliminar horario")
 
+    def test_auditor_sees_schedule_list_without_create_or_edit_actions(self):
+        auditor = User.objects.create_user(username="auditor_schedule", password="secret")
+        access = UserSiteAccess.objects.get(user=auditor)
+        access.role = UserSiteAccess.Role.AUDITOR
+        access.save()
+        other_site = Site.objects.create(code="008", name="SALADO")
+        WeeklySchedule.objects.create(
+            site=other_site,
+            week_start_date=date(2026, 6, 14),
+            first_day_index=SystemConfiguration.SUNDAY,
+        )
+        self.client.login(username="auditor_schedule", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:list"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "JARDIN.I")
+        self.assertContains(response, "SALADO")
+        self.assertContains(response, "Filtrar")
+        self.assertContains(response, "Ver")
+        self.assertNotContains(response, "Cargar horario")
+        self.assertNotContains(response, "Cargar saldos iniciales")
+        self.assertNotContains(response, "Plantilla plano")
+        self.assertNotContains(response, "Eliminar")
+
+    def test_auditor_opens_schedule_in_readonly_mode(self):
+        auditor = User.objects.create_user(username="auditor_readonly", password="secret")
+        access = UserSiteAccess.objects.get(user=auditor)
+        access.role = UserSiteAccess.Role.AUDITOR
+        access.save()
+        self.client.login(username="auditor_readonly", password="secret")
+
+        response = self.client.get(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "solo para consulta y auditoria")
+        self.assertContains(response, "Solo lectura")
+        self.assertContains(response, 'data-autosave-enabled="false"', html=False)
+        self.assertNotContains(response, "Guardar cambios")
+        self.assertNotContains(response, "Retirar")
+        self.assertNotContains(response, "Recargar personal")
+        self.assertNotContains(response, "Agregar persona manualmente")
+        self.assertNotContains(response, "Cargar horario por archivo plano")
+
+    def test_auditor_cannot_post_schedule_changes(self):
+        auditor = User.objects.create_user(username="auditor_post", password="secret")
+        access = UserSiteAccess.objects.get(user=auditor)
+        access.role = UserSiteAccess.Role.AUDITOR
+        access.save()
+        self.client.login(username="auditor_post", password="secret")
+
+        response = self.client.post(
+            reverse("schedules:edit", kwargs={"pk": self.schedule.pk}),
+            self.build_schedule_form_payload(notes="Cambio no permitido"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.notes, "")
+
+    def test_auditor_cannot_load_or_refresh_schedules(self):
+        auditor = User.objects.create_user(username="auditor_write_routes", password="secret")
+        access = UserSiteAccess.objects.get(user=auditor)
+        access.role = UserSiteAccess.Role.AUDITOR
+        access.save()
+        self.client.login(username="auditor_write_routes", password="secret")
+
+        load_response = self.client.get(
+            reverse("schedules:load"),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+        refresh_response = self.client.post(
+            reverse("schedules:refresh", kwargs={"pk": self.schedule.pk}),
+            SERVER_NAME="127.0.0.1",
+            SERVER_PORT="8000",
+        )
+
+        self.assertEqual(load_response.status_code, 403)
+        self.assertEqual(refresh_response.status_code, 403)
+
     def test_admin_can_delete_schedule(self):
         self.client.login(username="admin_delete", password="secret")
 

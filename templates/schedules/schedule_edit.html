@@ -11,11 +11,13 @@
     <div>
       <h2>Resumen de captura</h2>
       <p>Primer dia configurado: {{ schedule.get_first_day_index_display }}.</p>
-      {% if not schedule_closed %}
+      {% if can_edit_schedule %}
       <p class="closed-note">Autoguardado activo cada 30 segundos mientras editas este horario.</p>
       {% endif %}
       {% if schedule_closed %}
       <p class="closed-note">Este horario esta publicado y quedo cerrado para edicion.</p>
+      {% elif schedule_readonly %}
+      <p class="closed-note">Este horario esta disponible solo para consulta y auditoria.</p>
       {% elif schedule.status == "published" %}
       <p class="closed-note">Este horario sigue publicado, pero administracion lo habilito temporalmente para edicion.</p>
       {% endif %}
@@ -27,7 +29,7 @@
         <button type="submit" class="ghost-button">Habilitar edicion</button>
       </form>
       {% endif %}
-      {% if not schedule_closed %}
+      {% if can_edit_schedule %}
       <form method="post" action="{% url 'schedules:refresh' schedule.pk %}">
         {% csrf_token %}
         <button type="submit" class="ghost-button">Recargar personal</button>
@@ -46,7 +48,7 @@
     </div>
   </div>
 
-  {% if not schedule_closed %}
+  {% if can_edit_schedule %}
   <details class="manual-add-disclosure" {% if manual_add_open %}open{% endif %}>
     <summary class="ghost-button manual-add-summary">Agregar persona manualmente</summary>
     <form method="post" class="manual-add-form">
@@ -79,7 +81,7 @@
   </details>
   {% endif %}
 
-  {% if show_admin_balance_controls and not schedule_closed %}
+  {% if show_admin_balance_controls and can_edit_schedule %}
   <details class="manual-add-disclosure">
     <summary class="ghost-button manual-add-summary">Cargar horario por archivo plano</summary>
     <form
@@ -115,7 +117,7 @@
   </details>
   {% endif %}
 
-  <form method="post" class="stack-form" data-schedule-form="true" data-autosave-enabled="{% if not schedule_closed %}true{% else %}false{% endif %}">
+  <form method="post" class="stack-form" data-schedule-form="true" data-autosave-enabled="{% if can_edit_schedule %}true{% else %}false{% endif %}">
     {% csrf_token %}
     {{ line_formset.management_form }}
     <div class="field-grid compact-grid">
@@ -244,7 +246,7 @@
             <td class="schedule-cell-employee">{{ line_form.instance.employee_name }}</td>
             <td class="schedule-cell-role">{{ line_form.instance.job_role_name }}</td>
             <td class="schedule-cell-actions">
-              {% if not schedule_closed %}
+              {% if can_edit_schedule %}
               <button
                 type="submit"
                 class="table-action-button"
@@ -254,6 +256,8 @@
               >
                 Retirar
               </button>
+              {% elif schedule_readonly %}
+              <small>Solo lectura</small>
               {% else %}
               <small>Cerrado</small>
               {% endif %}
@@ -379,7 +383,7 @@
       </table>
     </div>
 
-    {% if not schedule_closed %}
+    {% if can_edit_schedule %}
     <div class="schedule-actions-bar">
       <button type="submit" class="primary-button" data-manual-save-button="true">Guardar cambios</button>
     </div>

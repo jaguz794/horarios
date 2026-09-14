@@ -5,7 +5,12 @@ from django.core.exceptions import PermissionDenied
 from django.http import HttpResponse
 from django.views.generic import ListView, TemplateView
 
-from core.access import get_accessible_schedules_queryset, get_accessible_sites_queryset, user_can_manage_all_sites
+from core.access import (
+    get_accessible_schedules_queryset,
+    get_accessible_sites_queryset,
+    user_can_audit_all_sites,
+    user_can_manage_all_sites,
+)
 from core.models import Site, SystemConfiguration
 from schedules.forms import ReportRangeForm, WeeklyBalanceReportForm
 from schedules.inventory_pdf import build_inventory_week_pdf_bytes, get_inventory_report_filename
@@ -136,6 +141,7 @@ class ReportHubView(LoginRequiredMixin, TemplateView):
         context = super().get_context_data(**kwargs)
         context.setdefault("range_form", self.get_range_form())
         context.setdefault("weekly_form", self.get_weekly_form())
+        context["is_audit_scope"] = user_can_audit_all_sites(self.request.user)
         context["is_admin_scope"] = user_can_manage_all_sites(self.request.user)
         return context
 
@@ -156,10 +162,10 @@ class ReportHubView(LoginRequiredMixin, TemplateView):
 
     def post(self, request, *args, **kwargs):
         report_type = request.POST.get("report_type", "")
-        is_admin_scope = user_can_manage_all_sites(request.user)
+        is_audit_scope = user_can_audit_all_sites(request.user)
 
-        if report_type in {"special_days", "overtime_balance", "night_bonus"} and not is_admin_scope:
-            raise PermissionDenied("Ese informe solo esta disponible para administracion.")
+        if report_type in {"special_days", "overtime_balance", "night_bonus"} and not is_audit_scope:
+            raise PermissionDenied("Ese informe solo esta disponible para administracion o auditoria.")
 
         range_form = self.get_range_form(request.POST)
         weekly_form = self.get_weekly_form(request.POST)

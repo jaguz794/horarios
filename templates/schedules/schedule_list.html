@@ -15,7 +15,9 @@
       {% if is_admin_scope %}
       <a href="{% url 'schedules:initial-balances' %}" class="ghost-button">Cargar saldos iniciales</a>
       {% endif %}
+      {% if can_create_schedules %}
       <a href="{% url 'schedules:load' %}" class="primary-button">Cargar horario</a>
+      {% endif %}
     </div>
   </div>
   {% if show_filters %}
@@ -54,7 +56,7 @@
           <td><span class="pill">{{ schedule.get_status_display }}</span></td>
           <td class="actions-cell">
             <a href="{% url 'schedules:edit' schedule.pk %}" class="text-link">
-              {% if schedule.is_closed %}Ver{% else %}Editar{% endif %}
+              {% if can_create_schedules and not schedule.is_closed %}Editar{% else %}Ver{% endif %}
             </a>
             <a href="{% url 'schedules:excel-download' schedule.pk %}" class="text-link">Excel</a>
             {% if is_admin_scope %}

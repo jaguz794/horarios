@@ -10,7 +10,13 @@ from django.urls import reverse
 from django.views import View
 from django.views.generic import FormView, ListView, TemplateView
 
-from core.access import get_accessible_schedules_queryset, user_can_delete_schedules, user_can_manage_all_sites
+from core.access import (
+    get_accessible_schedules_queryset,
+    user_can_audit_all_sites,
+    user_can_delete_schedules,
+    user_can_edit_schedules,
+    user_can_manage_all_sites,
+)
 from core.models import JobRole, SystemConfiguration
 from schedules.forms import (
     DOCUMENT_NUMBER_PATTERN,
@@ -84,8 +90,9 @@ class ScheduleListView(LoginRequiredMixin, ListView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["can_delete_schedules"] = user_can_delete_schedules(self.request.user)
+        context["can_create_schedules"] = user_can_edit_schedules(self.request.user)
         context["filter_form"] = getattr(self, "filter_form", self.get_filter_form())
-        context["show_filters"] = user_can_manage_all_sites(self.request.user)
+        context["show_filters"] = user_can_audit_all_sites(self.request.user)
         context["is_admin_scope"] = user_can_manage_all_sites(self.request.user)
         return context
 
@@ -93,6 +100,11 @@ class ScheduleListView(LoginRequiredMixin, ListView):
 class ScheduleLoadView(LoginRequiredMixin, FormView):
     template_name = "schedules/schedule_load.html"
     form_class = ScheduleLoadForm
+
+    def dispatch(self, request, *args, **kwargs):
+        if not user_can_edit_schedules(request.user):
+            raise PermissionDenied("El perfil de consulta solo puede visualizar horarios.")
+        return super().dispatch(request, *args, **kwargs)
 
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
@@ -225,7 +237,7 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
 
     def get(self, request, *args, **kwargs):
         schedule = self.get_schedule()
-        if not schedule.is_closed:
+        if not schedule.is_closed and user_can_edit_schedules(request.user):
             purge_blacklisted_lines_from_schedule(schedule)
             schedule.refresh_from_db()
         return self.render_to_response(self.build_context(schedule))
@@ -233,6 +245,16 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
     def post(self, request, *args, **kwargs):
         schedule = self.get_schedule()
         autosave_request = self.is_autosave_request(request)
+        if not user_can_edit_schedules(request.user):
+            if autosave_request:
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "message": "El perfil de consulta solo puede visualizar horarios.",
+                    },
+                    status=403,
+                )
+            raise PermissionDenied("El perfil de consulta solo puede visualizar horarios.")
         if not schedule.is_closed:
             purge_blacklisted_lines_from_schedule(schedule)
             schedule.refresh_from_db()
@@ -474,12 +496,14 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
     def build_context(self, schedule, schedule_form=None, line_formset=None, manual_add_form=None):
         config = SystemConfiguration.load()
         schedule_closed = schedule.is_closed
+        can_edit_schedule = user_can_edit_schedules(self.request.user) and not schedule_closed
+        readonly = schedule_closed or not can_edit_schedule
         is_admin_scope = user_can_manage_all_sites(self.request.user)
-        schedule_form = schedule_form or WeeklyScheduleForm(instance=schedule, readonly=schedule_closed)
-        manual_add_form = manual_add_form or self.get_manual_add_form(schedule, readonly=schedule_closed)
+        schedule_form = schedule_form or WeeklyScheduleForm(instance=schedule, readonly=readonly)
+        manual_add_form = manual_add_form or self.get_manual_add_form(schedule, readonly=readonly)
         line_formset = line_formset or ScheduleLineFormSet(
             instance=schedule,
-            form_kwargs=self.get_line_form_kwargs(schedule, readonly=schedule_closed),
+            form_kwargs=self.get_line_form_kwargs(schedule, readonly=readonly),
         )
         role_filter_options = sorted(
             {
@@ -506,6 +530,8 @@ class ScheduleEditView(LoginRequiredMixin, TemplateView):
             "manual_add_open": manual_add_form.is_bound,
             "role_filter_options": role_filter_options,
             "schedule_closed": schedule_closed,
+            "schedule_readonly": readonly,
+            "can_edit_schedule": can_edit_schedule,
             "can_reopen_published": self.can_reopen_published_schedule(schedule),
         }
 
@@ -514,6 +540,8 @@ class ScheduleRefreshView(LoginRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         queryset = get_accessible_schedules_queryset(request.user, WeeklySchedule.objects.all())
         schedule = get_object_or_404(queryset, pk=self.kwargs["pk"])
+        if not user_can_edit_schedules(request.user):
+            raise PermissionDenied("El perfil de consulta solo puede visualizar horarios.")
         if schedule.is_closed:
             messages.error(request, "El horario publicado esta cerrado y no se puede recargar personal.")
             return redirect(reverse("schedules:edit", kwargs={"pk": schedule.pk}))

@@ -1,9 +1,11 @@
 .venv/
+.venv_*/
 __pycache__/
 *.py[cod]
 *.sqlite3
 .env
 staticfiles/
 media/
+output/
 runserver-*.log
 runserver-*.err.log

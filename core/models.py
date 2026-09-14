@@ -79,6 +79,7 @@ class OperationalStaffCache(TimeStampedModel):
 class UserSiteAccess(TimeStampedModel):
     class Role(models.TextChoices):
         ADMIN = "admin", "Administrador"
+        AUDITOR = "auditor", "Consulta / auditoria"
         SITE_USER = "site_user", "Usuario por sede"
 
     user = models.OneToOneField(
@@ -106,6 +107,10 @@ class UserSiteAccess(TimeStampedModel):
     @property
     def can_manage_all_sites(self) -> bool:
         return self.user.is_superuser or self.role == self.Role.ADMIN
+
+    @property
+    def can_audit_all_sites(self) -> bool:
+        return self.can_manage_all_sites or self.role == self.Role.AUDITOR
 
 
 class Department(TimeStampedModel):
